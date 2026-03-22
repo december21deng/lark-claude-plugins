@@ -76,20 +76,26 @@ export async function startDaemon(config: AppConfig): Promise<void> {
               const files = (body.args.files as string[] | undefined) ?? []
               const msgType = (body.args.msg_type as string | undefined) as import('./types.js').MsgType | undefined
 
-              // If there's an active streaming card, finalize it with the reply text
-              // and skip sending a separate message
-              if (streamingCards.has(body.convKey)) {
-                await streamingCards.done(body.convKey, text)
-                // Still send images if any
-                for (const filePath of files) {
-                  try {
-                    const imageKey = await gw.uploadImage(filePath)
-                    await gw.sendImage(chatId, imageKey)
-                    log.info(TAG, `Sent image ${filePath} to ${chatId}`)
-                  } catch (e) {
-                    log.error(TAG, `Failed to send image ${filePath}: ${e}`)
+              // Check if text is card JSON (should be sent as separate interactive message)
+              let isCardJson = false
+              if (text.trimStart().startsWith('{')) {
+                try {
+                  const parsed = JSON.parse(text)
+                  if (parsed.schema || parsed.config || parsed.header || parsed.elements) {
+                    isCardJson = true
                   }
+                } catch {}
+              }
+
+              // If text is card JSON, close streaming card (if any) and send as new message
+              if (isCardJson) {
+                if (streamingCards.has(body.convKey)) {
+                  await streamingCards.done(body.convKey) // finalize without text
                 }
+                await gw.sendMessage(chatId, text, { replyToMessageId: replyTo || messageId, msgType })
+              } else if (streamingCards.has(body.convKey)) {
+                // Active streaming card — finalize with reply text
+                await streamingCards.done(body.convKey, text)
               } else {
                 // No streaming card — send as regular message
                 await gw.sendMessage(chatId, text, { replyToMessageId: replyTo || messageId, msgType })
