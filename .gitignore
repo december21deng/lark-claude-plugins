@@ -2,9 +2,11 @@
 node_modules/
 bun.lockb
 
+# Secrets — never commit real credentials
+.env
+!.env.example
+
 # Runtime data (contains tokens/secrets)
-# These are in ~/.lark-dispatcher/ not in the repo,
-# but just in case someone copies them here
 config.json
 sessions.json
 daemon.pid
