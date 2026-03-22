@@ -440,7 +440,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string' },
           reply_to: { type: 'string', description: 'Message ID to reply to (quote-reply).' },
           files: { type: 'array', items: { type: 'string' }, description: 'Absolute file paths to attach as images.' },
-          msg_type: { type: 'string', enum: ['text', 'interactive', 'raw_interactive'], description: 'Message format: "text" for plain text, "interactive" (default) for markdown card, "raw_interactive" for custom card JSON in text field.' },
+          msg_type: { type: 'string', enum: ['text', 'interactive'], description: 'Message format: "text" for plain text, "interactive" (default) for markdown card. If text is valid card JSON (has schema/config/header/elements), it is sent as-is without wrapping.' },
         },
         required: ['chat_id', 'text'],
       },

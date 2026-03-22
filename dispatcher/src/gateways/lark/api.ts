@@ -46,22 +46,32 @@ export class LarkApi {
       let content: string
 
       if (msgType === 'text') {
-        // Plain text
         finalMsgType = 'text'
         content = JSON.stringify({ text })
-      } else if (msgType === 'raw_interactive') {
-        // AI-constructed card JSON — pass through directly
-        finalMsgType = 'interactive'
-        content = text  // text IS the card JSON
       } else {
-        // Default: wrap in markdown card
         finalMsgType = 'interactive'
-        const card = {
-          schema: '2.0',
-          config: { wide_screen_mode: true },
-          body: { elements: [{ tag: 'markdown', content: text }] },
+        // Auto-detect: if text is already a valid card JSON, pass through directly
+        // Otherwise wrap in a markdown card
+        let isCardJson = false
+        if (text.trimStart().startsWith('{')) {
+          try {
+            const parsed = JSON.parse(text)
+            if (parsed.schema || parsed.config || parsed.header || parsed.elements) {
+              isCardJson = true
+            }
+          } catch {}
         }
-        content = JSON.stringify(card)
+
+        if (isCardJson) {
+          content = text
+        } else {
+          const card = {
+            schema: '2.0',
+            config: { wide_screen_mode: true },
+            body: { elements: [{ tag: 'markdown', content: text }] },
+          }
+          content = JSON.stringify(card)
+        }
       }
 
       if (opts?.replyToMessageId) {
