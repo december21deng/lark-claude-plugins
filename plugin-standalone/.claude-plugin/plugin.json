@@ -1,0 +1,5 @@
+{
+  "name": "lark-standalone",
+  "description": "Lark channel for Claude Code — standalone mode with direct WebSocket connection.",
+  "version": "0.0.1"
+}

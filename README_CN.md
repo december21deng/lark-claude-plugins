@@ -1,44 +1,60 @@
-# Lark Dispatcher
+# Lark Claude Plugins
 
 [English](./README.md) | [Design Doc](./DESIGN.md) | [设计文档](./DESIGN_CN.md)
 
-飞书 × Claude Code 混合调度系统。通过飞书与 Claude Code 交互，支持多会话并行、上下文隔离、远程 MCP（Clay、Gmail、Calendar 等）。
+通过飞书/Lark 与 Claude Code 交互。两种模式：简单的独立模式适合个人使用，多 Worker 调度模式适合团队。
 
-## 架构
+## 两种模式
+
+### 独立模式 (`plugin-standalone/`)
+
+单终端、单 Claude CLI、直连飞书 WebSocket。设置简单，无需 daemon。
+
+```
+飞书 WebSocket → Claude CLI（带所有远程 MCP）
+```
+
+适合：个人使用，一次一个对话。
+
+### 调度模式 (`plugin-dispatcher/` + `dispatcher/`)
+
+多 Worker 守护进程，带进程池、会话管理和上下文隔离。支持 N 个并行对话。
 
 ```
 飞书 → Daemon（唯一 WebSocket）→ 路由 → Worker Pool（N 个 Claude CLI）
                                               ↑ 每个都有完整远程 MCP
 ```
 
-- **Daemon** 持有唯一的飞书 WebSocket 连接，接收所有消息
-- **Worker Pool** 由 N 个 Claude CLI 进程组成，运行在 tmux session 中
-- 每个 Worker 是完整的 Claude CLI 主进程，自动加载所有远程 MCP
-- 不同对话（thread）分配到不同 Worker，上下文完全隔离
-- 驱逐时 kill + `--resume` 重建，上下文无损恢复
+适合：团队使用，多个并发对话，自动调度。
 
-## 为什么用这个架构？
+## 为什么有两种模式？
 
-Claude Code 的远程 MCP（Clay、Gmail、Calendar 等）是 `type: "sdk"`——只有 Claude CLI 作为**主进程**时才能加载。子进程方式（如 NeoClaw 的 `--input-format stream-json`）无法加载这些 MCP。
-
-但每个 Claude CLI 各自连飞书 WebSocket 时，飞书只推消息给其中一个连接。解决方案：daemon 持有唯一 WebSocket，通过 localhost HTTP 路由消息到 Worker。
+Claude Code 的远程 MCP（Clay、Gmail、Calendar 等）是 `type: "sdk"`——只有 Claude CLI 作为**主进程**时才能加载。独立模式提供最简单的配置。调度模式解决了飞书只向一个 WebSocket 连接推送消息的问题，通过 daemon 持有唯一连接并路由到多个 worker。
 
 ## 前置条件
 
 - macOS
 - [Bun](https://bun.sh/) v1.0+
 - [Claude Code CLI](https://claude.ai/code) 已安装
-- [tmux](https://github.com/tmux/tmux)（`brew install tmux`）
 - 飞书开放平台自建应用（WebSocket 模式）
+- [tmux](https://github.com/tmux/tmux)（仅调度模式：`brew install tmux`）
 
 ## 快速开始
 
-### 1. 安装
+### 1. 克隆并安装
 
 ```bash
 git clone https://github.com/december21deng/lark-claude-plugins.git
 cd lark-claude-plugins
-bash install.sh
+
+# 独立模式：
+bash install.sh standalone
+
+# 调度模式：
+bash install.sh dispatcher
+
+# 两者都装：
+bash install.sh both
 ```
 
 ### 2. 配置飞书应用
@@ -55,39 +71,46 @@ bash install.sh
 4. 事件与回调 → 订阅方式选 **长连接（WebSocket）**
 5. 订阅事件 → `im.message.receive_v1`
 
-### 3. 编辑配置
+### 3a. 独立模式：设置凭据并启动
 
 ```bash
+# 保存凭据
+mkdir -p ~/.claude/channels/lark
+cat > ~/.claude/channels/lark/.env << EOF
+LARK_APP_ID=cli_xxx
+LARK_APP_SECRET=xxx
+EOF
+
+# 启动 Claude（带独立插件）
+claude --dangerously-load-development-channels plugin:lark-standalone@local-channels
+```
+
+### 3b. 调度模式：配置并启动
+
+```bash
+# 编辑配置
 cp config.example.json ~/.lark-dispatcher/config.json
 vim ~/.lark-dispatcher/config.json
+
+# 启动 daemon
+cd dispatcher && bun run src/index.ts start
 ```
 
-填入 `appId`、`appSecret`、`bin` 路径和 `groupAutoReply` 群 ID。
-
-### 4. 启动
+### 4. 验证
 
 ```bash
-bun run src/index.ts start
-```
+# 独立模式：直接在飞书给机器人发消息
 
-Daemon 会自动：
-1. 预信任工作目录
-2. 创建 N 个 tmux worker session 并自动确认提示
-3. 连接飞书 WebSocket
-4. 第一个 worker ready 后立即开始接收消息
-
-### 5. 验证
-
-```bash
-bun run src/index.ts status          # 查看状态
-tmux ls                              # 查看 worker 列表
-tmux attach -t lark-worker-0           # 进入 worker 终端（Ctrl+B D 退出）
-tail -f ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log  # 查看日志
+# 调度模式：
+cd dispatcher && bun run src/index.ts status
+tmux ls
+tmux attach -t lark-worker-0  # Ctrl+B D 退出
+tail -f ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log
 ```
 
 ## 使用
 
-### 飞书命令
+### 飞书命令（调度模式）
 
 | 命令 | 功能 |
 |------|------|
@@ -96,7 +119,7 @@ tail -f ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log  # 查看日志
 | `/status` | 显示 worker 池状态 |
 | `/help` | 帮助 |
 
-### 多会话
+### 多会话（调度模式）
 
 - **私聊** → 每个用户分配独立 worker
 - **群聊话题** → 每个话题分配独立 worker
@@ -104,48 +127,56 @@ tail -f ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log  # 查看日志
 - 最多 N 个并行对话（通过 `maxWorkers` 配置）
 - 池满时驱逐最久未活跃的对话（通过 `--resume` 恢复上下文）
 
-### Worker 池管理
-
-```
-thread_A 消息1 → worker-0（新分配）
-thread_A 消息2 → worker-0（复用，上下文连续）
-thread_B 消息1 → worker-1（空闲 worker 分配）
-...池满...
-thread_C 来了 → 驱逐最旧 → kill → --resume 重启 → 服务 thread_C
-thread_A 回来 → 驱逐最旧 → --resume session_A → 上下文完整恢复
-```
-
 ### 权限控制
+
+两种模式都通过 `~/.claude/channels/lark/access.json` 支持权限控制：
 
 | 设置 | 说明 |
 |------|------|
-| `dmPolicy: "open"` | 任何人都可以私聊 |
-| `dmPolicy: "pairing"` | 需要配对码确认 |
+| `dmPolicy: "pairing"` | 需要配对码确认（默认） |
+| `dmPolicy: "allowlist"` | 仅允许白名单用户 |
 | `dmPolicy: "disabled"` | 禁止私聊 |
 | `groupAutoReply: ["oc_xxx"]` | 这些群不需要 @mention 就回复 |
 
+通过 skill 管理：`/lark-standalone:access` 或 `/lark-customized:access`
+
+调度模式还支持在 config.json 中设置 `dmPolicy: "open"` 允许所有用户。
+
 ### 远程 MCP
 
-每个 Worker 自动加载所有已连接的远程 MCP：
+每个 Claude CLI 实例自动加载所有已连接的远程 MCP：
 Clay、Gmail、Google Calendar、Context7，以及所有在 Claude Desktop 中已连接的 MCP。
 
-## 配置参考
+## 配置参考（调度模式）
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `pool.maxWorkers` | 10 | Worker 数量 |
+| `pool.maxWorkers` | 3 | Worker 数量 |
 | `pool.basePort` | 7100 | Worker 端口起始 |
 | `pool.daemonApiPort` | 8900 | Daemon HTTP API 端口 |
-| `lark.domain` | "lark" | "lark" 或 "lark" |
+| `lark.domain` | "feishu" | "feishu" 或 "lark" |
 | `log.level` | "info" | 日志级别 |
 
-## 停止
+## 停止（调度模式）
 
 ```bash
 # 方式 1: Ctrl+C（在 daemon 终端）
 # 方式 2:
-bun run src/index.ts stop
+cd dispatcher && bun run src/index.ts stop
 ```
+
+## 代码结构
+
+| 路径 | 职责 |
+|------|------|
+| `plugin-standalone/server.ts` | 独立插件：直连飞书 WebSocket + MCP 工具 |
+| `plugin-dispatcher/server.ts` | 调度插件：localhost HTTP 桥接 + MCP 通知 |
+| `dispatcher/src/daemon.ts` | Daemon 入口、HTTP server、信号处理 |
+| `dispatcher/src/pool.ts` | Worker Pool：tmux 管理、分配、驱逐、resume |
+| `dispatcher/src/router.ts` | 消息路由：convKey 计算、Mutex 排队、斜杠命令 |
+| `dispatcher/src/gateways/lark/ws.ts` | 飞书 WebSocket 连接 + 事件处理 |
+| `dispatcher/src/gateways/lark/receiver.ts` | 消息解析 + 去重 + gate 权限控制 |
+| `dispatcher/src/gateways/lark/api.ts` | 飞书 HTTP API（发消息、表情） |
 
 ## 故障排查
 
@@ -153,15 +184,16 @@ bun run src/index.ts stop
 <summary>消息不回复</summary>
 
 ```bash
-bun run src/index.ts status
+# 独立模式：查看终端的 stderr 输出
+# 调度模式：
+cd dispatcher && bun run src/index.ts status
 curl http://localhost:7100/health
-ps aux | grep "lark-mcp\|bun.*server" | grep -v grep
 tail -50 ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log
 ```
 </details>
 
 <details>
-<summary>Worker 启动失败</summary>
+<summary>Worker 启动失败（调度模式）</summary>
 
 ```bash
 tmux attach -t lark-worker-0
@@ -173,25 +205,13 @@ LARK_DISPATCHER_PORT=7100 LARK_DAEMON_PORT=8900 claude \
 </details>
 
 <details>
-<summary>端口被占用</summary>
+<summary>端口被占用（调度模式）</summary>
 
 ```bash
 lsof -ti:8900 | xargs kill -9
 lsof -ti:7100 | xargs kill -9
 ```
 </details>
-
-## 代码结构
-
-| 文件 | 职责 |
-|------|------|
-| `src/daemon.ts` | Daemon 入口、HTTP server、信号处理 |
-| `src/pool.ts` | Worker Pool：tmux 管理、分配、驱逐、resume |
-| `src/router.ts` | 消息路由：convKey 计算、Mutex 排队、斜杠命令 |
-| `src/gateways/lark/ws.ts` | 飞书 WebSocket 连接 + 事件处理 |
-| `src/gateways/lark/receiver.ts` | 消息解析 + 去重 + gate 权限控制 |
-| `src/gateways/lark/api.ts` | 飞书 HTTP API（发消息、表情） |
-| `plugin/server.ts` | Channel 插件：localhost HTTP + MCP notification 桥接 |
 
 ## License
 

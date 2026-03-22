@@ -1,99 +1,116 @@
-# Lark Dispatcher
+# Lark Claude Plugins
 
 [中文文档](./README_CN.md) | [Design Doc](./DESIGN.md) | [设计文档](./DESIGN_CN.md)
 
-A hybrid dispatching system for Lark × Claude Code. Chat with Claude Code through Lark with multi-session parallelism, context isolation, and full remote MCP support (Clay, Gmail, Calendar, etc.).
+Chat with Claude Code through Lark/Feishu. Two modes: simple standalone for personal use, or multi-worker dispatcher for teams.
 
-## Architecture
+## Two Modes
+
+### Standalone Mode (`plugin-standalone/`)
+
+Single terminal, single Claude CLI, direct Lark WebSocket connection. Simple setup, no daemon needed.
+
+```
+Lark WebSocket → Claude CLI (with all remote MCPs)
+```
+
+Best for: personal use, single conversation at a time.
+
+### Dispatcher Mode (`plugin-dispatcher/` + `dispatcher/`)
+
+Multi-worker daemon with process pool, session management, and context isolation. Supports N parallel conversations.
 
 ```
 Lark → Daemon (single WebSocket) → Router → Worker Pool (N Claude CLIs)
                                                     ↑ each has full remote MCPs
 ```
 
-- **Daemon** holds the single Lark WebSocket connection, receives all messages
-- **Worker Pool** consists of N Claude CLI processes running in tmux sessions
-- Each Worker is a full Claude CLI main process, automatically loading all remote MCPs
-- Different conversations (threads) are assigned to different Workers with complete context isolation
-- On eviction: kill + `--resume` rebuilds context losslessly
+Best for: team use, multiple concurrent conversations, auto-scaling.
 
-## Why This Architecture?
+## Why Two Modes?
 
-Claude Code's remote MCPs (Clay, Gmail, Calendar, etc.) are `type: "sdk"` — only available when Claude CLI runs as the **main process**. Subprocess approaches (like NeoClaw's `--input-format stream-json`) cannot load these MCPs.
-
-However, when each Claude CLI connects its own Lark WebSocket, Lark only delivers messages to one connection. The solution: a daemon holds the single WebSocket and routes messages to Workers via localhost HTTP.
-
-```
-                                     ┌→ Claude CLI Worker 1 :7100 (all MCPs)
-Lark → Daemon (single WS) ────────┼→ Claude CLI Worker 2 :7101 (all MCPs)
-                                     └→ Claude CLI Worker N :710N (all MCPs)
-```
+Claude Code's remote MCPs (Clay, Gmail, Calendar, etc.) are `type: "sdk"` -- only available when Claude CLI runs as the **main process**. Standalone mode gives you the simplest setup. Dispatcher mode solves the problem of Lark only delivering messages to one WebSocket connection by having a daemon hold the single connection and route to multiple workers.
 
 ## Prerequisites
 
 - macOS
 - [Bun](https://bun.sh/) v1.0+
 - [Claude Code CLI](https://claude.ai/code) installed
-- [tmux](https://github.com/tmux/tmux) (`brew install tmux`)
 - Lark self-built app (WebSocket mode)
+- [tmux](https://github.com/tmux/tmux) (dispatcher mode only: `brew install tmux`)
 
 ## Quick Start
 
-### 1. Install
+### 1. Clone and Install
 
 ```bash
 git clone https://github.com/december21deng/lark-claude-plugins.git
 cd lark-claude-plugins
-bash install.sh
+
+# Standalone mode:
+bash install.sh standalone
+
+# Dispatcher mode:
+bash install.sh dispatcher
+
+# Both:
+bash install.sh both
 ```
 
 ### 2. Configure Lark App
 
 Create a self-built app on [Lark Open Platform](https://open.larksuite.com):
 
-1. Create app → get App ID and App Secret
-2. Add capability → Bot
-3. Permissions → enable:
-   - `im:message` — send/receive messages
-   - `im:message:send_as_bot` — send as bot
-   - `im:resource` — upload/download resources
-   - `im:message.group_msg:readonly` — receive all group messages (not just @mentions)
-4. Events & Callbacks → choose **Long Connection (WebSocket)** mode
-5. Subscribe event → `im.message.receive_v1`
+1. Create app -> get App ID and App Secret
+2. Add capability -> Bot
+3. Permissions -> enable:
+   - `im:message` -- send/receive messages
+   - `im:message:send_as_bot` -- send as bot
+   - `im:resource` -- upload/download resources
+   - `im:message.group_msg:readonly` -- receive all group messages (not just @mentions)
+4. Events & Callbacks -> choose **Long Connection (WebSocket)** mode
+5. Subscribe event -> `im.message.receive_v1`
 
-### 3. Edit Configuration
+### 3a. Standalone: Set Credentials and Start
 
 ```bash
+# Save credentials
+mkdir -p ~/.claude/channels/lark
+cat > ~/.claude/channels/lark/.env << EOF
+LARK_APP_ID=cli_xxx
+LARK_APP_SECRET=xxx
+EOF
+
+# Start Claude with the standalone plugin
+claude --dangerously-load-development-channels plugin:lark-standalone@local-channels
+```
+
+### 3b. Dispatcher: Configure and Start
+
+```bash
+# Edit config
 cp config.example.json ~/.lark-dispatcher/config.json
 vim ~/.lark-dispatcher/config.json
+
+# Start daemon
+cd dispatcher && bun run src/index.ts start
 ```
 
-Fill in your `appId`, `appSecret`, `bin` path, and `groupAutoReply` chat IDs.
-
-### 4. Start
+### 4. Verify
 
 ```bash
-bun run src/index.ts start
-```
+# Standalone: just send a message to your bot in Lark
 
-The daemon will automatically:
-1. Pre-trust the workspace directory
-2. Create N tmux worker sessions with auto-confirmation
-3. Connect Lark WebSocket
-4. Start receiving messages (as soon as the first worker is ready)
-
-### 5. Verify
-
-```bash
-bun run src/index.ts status          # Check status
-tmux ls                              # List workers
-tmux attach -t lark-worker-0           # Attach to worker (Ctrl+B D to detach)
-tail -f ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log  # View logs
+# Dispatcher:
+cd dispatcher && bun run src/index.ts status
+tmux ls
+tmux attach -t lark-worker-0  # Ctrl+B D to detach
+tail -f ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log
 ```
 
 ## Usage
 
-### Lark Commands
+### Lark Commands (Dispatcher Mode)
 
 | Command | Function |
 |---------|----------|
@@ -102,55 +119,63 @@ tail -f ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log  # View logs
 | `/status` | Show worker pool status |
 | `/help` | Help |
 
-### Multi-Session
+### Multi-Session (Dispatcher Mode)
 
-- **DM** → each user's DM gets its own worker
-- **Group thread** → each thread gets its own worker
-- **Group (no thread)** → the whole group shares one worker
+- **DM** -> each user's DM gets its own worker
+- **Group thread** -> each thread gets its own worker
+- **Group (no thread)** -> the whole group shares one worker
 - Up to N parallel conversations (configure `maxWorkers`)
 - When pool is full, least recently used conversation is evicted (context restored via `--resume`)
 
-### Worker Pool Management
-
-```
-thread_A msg 1 → worker-0 (newly assigned)
-thread_A msg 2 → worker-0 (reused, context continues)
-thread_B msg 1 → worker-1 (idle worker assigned)
-...pool full...
-thread_C arrives → evict oldest → kill → restart with --resume → serve thread_C
-thread_A returns → evict oldest → restart with --resume session_A → context restored
-```
-
 ### Access Control
+
+Both modes support access control via `~/.claude/channels/lark/access.json`:
 
 | Setting | Description |
 |---------|-------------|
-| `dmPolicy: "open"` | Anyone can DM the bot |
-| `dmPolicy: "pairing"` | Requires pairing code |
+| `dmPolicy: "pairing"` | Requires pairing code (default) |
+| `dmPolicy: "allowlist"` | Only allowlisted users |
 | `dmPolicy: "disabled"` | DM disabled |
 | `groupAutoReply: ["oc_xxx"]` | These groups reply without @mention |
 
+Manage with the skill: `/lark-standalone:access` or `/lark-customized:access`
+
+Dispatcher mode also supports `dmPolicy: "open"` in config.json for allowing all users.
+
 ### Remote MCPs
 
-Each Worker automatically loads all connected remote MCPs:
+Each Claude CLI instance automatically loads all connected remote MCPs:
 Clay, Gmail, Google Calendar, Context7, and all MCPs connected in Claude Desktop.
 
-## Configuration Reference
+## Configuration Reference (Dispatcher)
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `pool.maxWorkers` | 10 | Number of workers |
+| `pool.maxWorkers` | 3 | Number of workers |
 | `pool.basePort` | 7100 | Worker port range start |
 | `pool.daemonApiPort` | 8900 | Daemon HTTP API port |
-| `lark.domain` | "lark" | "lark" or "lark" |
+| `lark.domain` | "feishu" | "feishu" or "lark" |
 | `log.level` | "info" | Log level |
 
-## Stop
+## Stop (Dispatcher)
 
 ```bash
 # Ctrl+C in daemon terminal, or:
-bun run src/index.ts stop
+cd dispatcher && bun run src/index.ts stop
 ```
+
+## Code Structure
+
+| Path | Responsibility |
+|------|---------------|
+| `plugin-standalone/server.ts` | Standalone plugin: direct Lark WebSocket + MCP tools |
+| `plugin-dispatcher/server.ts` | Dispatcher plugin: localhost HTTP bridge + MCP notification |
+| `dispatcher/src/daemon.ts` | Daemon entry, HTTP server, signal handling |
+| `dispatcher/src/pool.ts` | Worker Pool: tmux management, assignment, eviction, resume |
+| `dispatcher/src/router.ts` | Message routing: convKey, Mutex queuing, slash commands |
+| `dispatcher/src/gateways/lark/ws.ts` | Lark WebSocket + event handling |
+| `dispatcher/src/gateways/lark/receiver.ts` | Message parsing + dedup + access control |
+| `dispatcher/src/gateways/lark/api.ts` | Lark HTTP API (messages, reactions) |
 
 ## Troubleshooting
 
@@ -158,15 +183,16 @@ bun run src/index.ts stop
 <summary>Messages not getting replies</summary>
 
 ```bash
-bun run src/index.ts status
+# Standalone: check stderr output in terminal
+# Dispatcher:
+cd dispatcher && bun run src/index.ts status
 curl http://localhost:7100/health
-ps aux | grep "lark-mcp\|bun.*server" | grep -v grep
 tail -50 ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log
 ```
 </details>
 
 <details>
-<summary>Worker startup failure</summary>
+<summary>Worker startup failure (Dispatcher)</summary>
 
 ```bash
 tmux attach -t lark-worker-0
@@ -178,25 +204,13 @@ LARK_DISPATCHER_PORT=7100 LARK_DAEMON_PORT=8900 claude \
 </details>
 
 <details>
-<summary>Port in use</summary>
+<summary>Port in use (Dispatcher)</summary>
 
 ```bash
 lsof -ti:8900 | xargs kill -9
 lsof -ti:7100 | xargs kill -9
 ```
 </details>
-
-## Code Structure
-
-| File | Responsibility |
-|------|---------------|
-| `src/daemon.ts` | Daemon entry, HTTP server, signal handling |
-| `src/pool.ts` | Worker Pool: tmux management, assignment, eviction, resume |
-| `src/router.ts` | Message routing: convKey, Mutex queuing, slash commands |
-| `src/gateways/lark/ws.ts` | Lark WebSocket + event handling |
-| `src/gateways/lark/receiver.ts` | Message parsing + dedup + access control |
-| `src/gateways/lark/api.ts` | Lark HTTP API (messages, reactions) |
-| `plugin/server.ts` | Channel plugin: localhost HTTP + MCP notification bridge |
 
 ## License
 

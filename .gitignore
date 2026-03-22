@@ -3,7 +3,7 @@ node_modules/
 bun.lockb
 
 # Runtime data (contains tokens/secrets)
-# These are in ~/.feishu-dispatcher/ not in the repo,
+# These are in ~/.lark-dispatcher/ not in the repo,
 # but just in case someone copies them here
 config.json
 sessions.json
@@ -11,8 +11,15 @@ daemon.pid
 *.log
 logs/
 
-# Plugin cache (installed by Claude Desktop, contains symlinks)
-plugin/node_modules/
+# Plugin caches
+plugin-standalone/node_modules/
+plugin-dispatcher/node_modules/
+dispatcher/node_modules/
+
+# Bun lock files in subdirs
+plugin-standalone/bun.lock
+plugin-dispatcher/bun.lock
+dispatcher/bun.lock
 
 # OS
 .DS_Store
