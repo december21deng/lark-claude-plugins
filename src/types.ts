@@ -1,0 +1,92 @@
+// ── Parsed message from any gateway ──
+
+export interface ParsedMessage {
+  platform: string        // 'feishu' | 'discord'
+  chatId: string
+  messageId: string
+  threadId?: string
+  senderId: string
+  senderName: string
+  text: string
+  chatType: 'private' | 'group'
+  mentionedBot: boolean
+  attachments?: string[]
+}
+
+// ── Gateway interface ──
+
+export interface SendOpts {
+  replyToMessageId?: string
+  threadId?: string
+}
+
+export interface Gateway {
+  readonly platform: string
+  start(onMessage: (msg: ParsedMessage) => void): Promise<void>
+  stop(): Promise<void>
+  sendMessage(chatId: string, text: string, opts?: SendOpts): Promise<void>
+  addReaction(chatId: string, messageId: string, emoji: string): Promise<string | null>
+  removeReaction(chatId: string, messageId: string, reactionId: string): Promise<void>
+  fetchMessages(chatId: string, limit: number): Promise<Array<{ id: string; text: string; user: string }>>
+}
+
+// ── Worker pool types ──
+
+export interface Worker {
+  proc: any | null  // node-pty IPty instance
+  port: number
+  convKey: string | null
+  sessionId: string | null
+  startedAt: number
+  ready: boolean
+  pid: number | null
+}
+
+// ── Tool call proxy ──
+
+export interface ToolCallRequest {
+  tool: string
+  args: Record<string, unknown>
+  convKey: string
+  platform: string
+}
+
+export interface ToolCallResponse {
+  result: { content: Array<{ type: string; text: string }> }
+  isError?: boolean
+}
+
+// ── Config ──
+
+export interface FeishuConfig {
+  appId: string
+  appSecret: string
+  domain: 'feishu' | 'lark'
+  access: AccessConfig
+}
+
+export interface AccessConfig {
+  dmPolicy: 'open' | 'pairing' | 'allowlist' | 'disabled'
+  allowFrom: string[]
+  groups: Record<string, { requireMention: boolean; allowFrom?: string[] }>
+  groupAutoReply: string[]
+}
+
+export interface PoolConfig {
+  maxWorkers: number
+  basePort: number
+  daemonApiPort: number
+}
+
+export interface ClaudeConfig {
+  bin: string
+  pluginChannel: string
+  systemPrompt?: string
+}
+
+export interface AppConfig {
+  feishu: FeishuConfig
+  pool: PoolConfig
+  claude: ClaudeConfig
+  log: { level: string; dir: string }
+}

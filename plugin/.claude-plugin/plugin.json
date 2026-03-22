@@ -1,0 +1,5 @@
+{
+  "name": "feishu-customized",
+  "description": "Feishu/Lark channel for Claude Code — dispatcher mode messaging bridge.",
+  "version": "0.0.1"
+}

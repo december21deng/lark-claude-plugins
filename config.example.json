@@ -1,0 +1,26 @@
+{
+  "feishu": {
+    "appId": "cli_your_app_id_here",
+    "appSecret": "your_app_secret_here",
+    "domain": "feishu",
+    "access": {
+      "dmPolicy": "open",
+      "allowFrom": [],
+      "groups": {},
+      "groupAutoReply": ["oc_your_group_chat_id"]
+    }
+  },
+  "pool": {
+    "maxWorkers": 10,
+    "basePort": 7100,
+    "daemonApiPort": 8900
+  },
+  "claude": {
+    "bin": "/Users/your_username/.local/bin/claude",
+    "pluginChannel": "plugin:feishu-customized@local-channels"
+  },
+  "log": {
+    "level": "info",
+    "dir": "/Users/your_username/.feishu-dispatcher/logs"
+  }
+}

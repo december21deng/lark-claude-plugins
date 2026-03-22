@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+bun.lockb
+
+# Runtime data (contains tokens/secrets)
+# These are in ~/.feishu-dispatcher/ not in the repo,
+# but just in case someone copies them here
+config.json
+sessions.json
+daemon.pid
+*.log
+logs/
+
+# Plugin cache (installed by Claude Desktop, contains symlinks)
+plugin/node_modules/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
