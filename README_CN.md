@@ -4,6 +4,39 @@
 
 通过飞书/Lark 与 Claude Code 交互。两种模式：简单的独立模式适合个人使用，多 Worker 调度模式适合团队。
 
+## 功能特性
+
+### 核心功能
+- **Daemon + Worker Pool** -- 基于 tmux，支持最多 10 个并行 Claude CLI worker
+- **飞书 WebSocket** -- 长连接实时收发消息
+- **交互式卡片回复** -- Markdown 渲染，自动检测卡片 JSON
+- **Typing 表情反馈** -- 处理中显示键盘动画（OpenClaw 风格）
+- **多会话并行** -- 不同 thread 路由到不同 worker
+- **会话隔离** -- 驱逐 + `--resume` 上下文恢复，互不干扰
+- **全部远程 MCP** -- Clay、Gmail、Calendar、Context7，及所有 Claude Desktop MCP
+- **图片支持** -- 接收（下载到 inbox）+ 发送（上传 + image_key）
+- **全部飞书 msg_type** -- text、post、image、file、interactive、audio、media、sticker 等
+- **卡片 JSON 自动检测** -- 原始卡片 JSON 直接发送，纯文本自动包装为 markdown 卡片
+- **话题感知路由** -- 群聊话题组每个话题分配独立 worker
+- **斜杠命令** -- `/clear`、`/new`、`/status`、`/help`
+
+### 流式卡片（v2）
+通过飞书 CardKit API 实时显示进度：
+- 工具调用步骤显示在可折叠面板中
+- 文本更新具有打字机流式效果
+- Claude 发送最终回复时卡片自动定稿
+
+### 权限转发（v2）
+将 Claude 的权限确认提示转发到飞书交互卡片：
+- 在飞书中向用户发送带有允许/拒绝按钮的卡片
+- 支持按钮点击（`card.action.trigger_v1`）和文本回复降级（"允许"/"拒绝"）
+- 2 分钟超时自动拒绝
+
+### 插件独立模式（v2）
+无需调度守护进程即可独立工作：
+- 单个 Claude CLI 直连飞书 WebSocket
+- 无需 tmux、daemon 或 worker pool
+
 ## 两种模式
 
 ### 独立模式 (`plugin-standalone/`)
@@ -11,7 +44,7 @@
 单终端、单 Claude CLI、直连飞书 WebSocket。设置简单，无需 daemon。
 
 ```
-飞书 WebSocket → Claude CLI（带所有远程 MCP）
+飞书 WebSocket -> Claude CLI（带所有远程 MCP）
 ```
 
 适合：个人使用，一次一个对话。
@@ -21,8 +54,8 @@
 多 Worker 守护进程，带进程池、会话管理和上下文隔离。支持 N 个并行对话。
 
 ```
-飞书 → Daemon（唯一 WebSocket）→ 路由 → Worker Pool（N 个 Claude CLI）
-                                              ↑ 每个都有完整远程 MCP
+飞书 -> Daemon（唯一 WebSocket）-> 路由 -> Worker Pool（N 个 Claude CLI）
+                                              ^ 每个都有完整远程 MCP
 ```
 
 适合：团队使用，多个并发对话，自动调度。
@@ -61,15 +94,16 @@ bash install.sh both
 
 在 [飞书开放平台](https://open.larksuite.com) 创建自建应用：
 
-1. 创建应用 → 获取 App ID 和 App Secret
-2. 添加能力 → 机器人
-3. 权限管理 → 开通：
-   - `im:message` — 收发消息
-   - `im:message:send_as_bot` — 以机器人身份发消息
-   - `im:resource` — 上传下载资源
-   - `im:message.group_msg:readonly` — 接收群聊所有消息（不只是 @机器人的）
-4. 事件与回调 → 订阅方式选 **长连接（WebSocket）**
-5. 订阅事件 → `im.message.receive_v1`
+1. 创建应用 -> 获取 App ID 和 App Secret
+2. 添加能力 -> 机器人
+3. 权限管理 -> 开通：
+   - `im:message` -- 收发消息
+   - `im:message:send_as_bot` -- 以机器人身份发消息
+   - `im:resource` -- 上传下载资源
+   - `im:message.group_msg:readonly` -- 接收群聊所有消息（不只是 @机器人的）
+4. 事件与回调 -> 订阅方式选 **长连接（WebSocket）**
+5. 订阅事件 -> `im.message.receive_v1`
+6. 订阅事件 -> `card.action.trigger`（权限转发按钮所需）
 
 ### 3a. 独立模式：设置凭据并启动
 
@@ -121,9 +155,9 @@ tail -f ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log
 
 ### 多会话（调度模式）
 
-- **私聊** → 每个用户分配独立 worker
-- **群聊话题** → 每个话题分配独立 worker
-- **群聊（无话题）** → 整个群共享一个 worker
+- **私聊** -> 每个用户分配独立 worker
+- **群聊话题** -> 每个话题分配独立 worker
+- **群聊（无话题）** -> 整个群共享一个 worker
 - 最多 N 个并行对话（通过 `maxWorkers` 配置）
 - 池满时驱逐最久未活跃的对话（通过 `--resume` 恢复上下文）
 
@@ -146,6 +180,16 @@ tail -f ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log
 
 每个 Claude CLI 实例自动加载所有已连接的远程 MCP：
 Clay、Gmail、Google Calendar、Context7，以及所有在 Claude Desktop 中已连接的 MCP。
+
+## 测试
+
+52 个单元测试，覆盖 mutex、dedup、router、session-store 和 receiver：
+
+```bash
+cd dispatcher && bun test
+```
+
+所有测试通过。测试文件位于 `dispatcher/tests/`。
 
 ## 配置参考（调度模式）
 
@@ -174,9 +218,13 @@ cd dispatcher && bun run src/index.ts stop
 | `dispatcher/src/daemon.ts` | Daemon 入口、HTTP server、信号处理 |
 | `dispatcher/src/pool.ts` | Worker Pool：tmux 管理、分配、驱逐、resume |
 | `dispatcher/src/router.ts` | 消息路由：convKey 计算、Mutex 排队、斜杠命令 |
+| `dispatcher/src/permission.ts` | 权限转发：发送允许/拒绝交互卡片 |
+| `dispatcher/src/streaming-card.ts` | 流式卡片管理：CardKit API、可折叠工具面板 |
+| `dispatcher/src/session-store.ts` | 会话持久化（sessions.json） |
 | `dispatcher/src/gateways/lark/ws.ts` | 飞书 WebSocket 连接 + 事件处理 |
 | `dispatcher/src/gateways/lark/receiver.ts` | 消息解析 + 去重 + gate 权限控制 |
 | `dispatcher/src/gateways/lark/api.ts` | 飞书 HTTP API（发消息、表情） |
+| `dispatcher/tests/` | 52 个单元测试（mutex、dedup、router、session-store、receiver） |
 
 ## 故障排查
 
