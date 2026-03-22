@@ -41,25 +41,38 @@ export class LarkApi {
 
   async sendMessage(chatId: string, text: string, opts?: SendOpts): Promise<void> {
     try {
-      // Build interactive card (same as plugin's sendReply)
-      const card = {
-        schema: '2.0',
-        config: { wide_screen_mode: true },
-        body: { elements: [{ tag: 'markdown', content: text }] },
+      const msgType = opts?.msgType ?? 'interactive'
+      let finalMsgType: string
+      let content: string
+
+      if (msgType === 'text') {
+        // Plain text
+        finalMsgType = 'text'
+        content = JSON.stringify({ text })
+      } else if (msgType === 'raw_interactive') {
+        // AI-constructed card JSON — pass through directly
+        finalMsgType = 'interactive'
+        content = text  // text IS the card JSON
+      } else {
+        // Default: wrap in markdown card
+        finalMsgType = 'interactive'
+        const card = {
+          schema: '2.0',
+          config: { wide_screen_mode: true },
+          body: { elements: [{ tag: 'markdown', content: text }] },
+        }
+        content = JSON.stringify(card)
       }
-      const content = JSON.stringify(card)
 
       if (opts?.replyToMessageId) {
-        // Reply to specific message (stays in thread)
         await (this._client as any).im.message.reply({
           path: { message_id: opts.replyToMessageId },
-          data: { msg_type: 'interactive', content },
+          data: { msg_type: finalMsgType, content },
         })
       } else {
-        // New message to chat
         await (this._client as any).im.message.create({
           params: { receive_id_type: 'chat_id' },
-          data: { receive_id: chatId, msg_type: 'interactive', content },
+          data: { receive_id: chatId, msg_type: finalMsgType, content },
         })
       }
 

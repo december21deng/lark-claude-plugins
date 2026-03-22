@@ -63,9 +63,10 @@ export async function startDaemon(config: AppConfig): Promise<void> {
               const replyTo = body.args.reply_to as string | undefined
               const messageId = body.args.message_id as string | undefined
               const files = (body.args.files as string[] | undefined) ?? []
+              const msgType = (body.args.msg_type as string | undefined) as import('./types.js').MsgType | undefined
 
               // Always reply to the original message so it stays in the thread
-              await gw.sendMessage(chatId, text, { replyToMessageId: replyTo || messageId })
+              await gw.sendMessage(chatId, text, { replyToMessageId: replyTo || messageId, msgType })
 
               // Upload and send image files
               for (const filePath of files) {

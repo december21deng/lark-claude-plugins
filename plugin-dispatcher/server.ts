@@ -432,7 +432,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'reply',
-      description: 'Reply on Lark. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for threading, and files (absolute paths) to attach images.',
+      description: 'Reply on Lark. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for threading, files (absolute paths) to attach images, and msg_type to control message format.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -440,6 +440,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string' },
           reply_to: { type: 'string', description: 'Message ID to reply to (quote-reply).' },
           files: { type: 'array', items: { type: 'string' }, description: 'Absolute file paths to attach as images.' },
+          msg_type: { type: 'string', enum: ['text', 'interactive', 'raw_interactive'], description: 'Message format: "text" for plain text, "interactive" (default) for markdown card, "raw_interactive" for custom card JSON in text field.' },
         },
         required: ['chat_id', 'text'],
       },

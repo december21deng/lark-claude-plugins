@@ -25,9 +25,12 @@ export interface ParsedMessage {
 
 // ── Gateway interface ──
 
+export type MsgType = 'text' | 'interactive' | 'raw_interactive'
+
 export interface SendOpts {
   replyToMessageId?: string
   threadId?: string
+  msgType?: MsgType  // default: 'interactive'
 }
 
 export interface Gateway {
