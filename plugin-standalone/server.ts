@@ -435,7 +435,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'reply',
-      description: 'Reply on Lark. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for threading, and files (absolute paths) to attach images.',
+      description: 'Reply on Lark. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for threading, files (absolute paths) to attach images, and msg_type to control message format.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -443,6 +443,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string' },
           reply_to: { type: 'string', description: 'Message ID to reply to (quote-reply).' },
           files: { type: 'array', items: { type: 'string' }, description: 'Absolute file paths to attach as images.' },
+          msg_type: { type: 'string', enum: ['text', 'post', 'image', 'file', 'audio', 'media', 'sticker', 'interactive', 'share_chat', 'share_user'], description: 'Lark message type. Default "interactive" (markdown card). Use "text" for plain text, "post" for rich text, "image" for image_key, "file" for file_key. For "interactive": if text is valid card JSON it is sent as-is, otherwise wrapped in markdown card.' },
         },
         required: ['chat_id', 'text'],
       },
@@ -510,8 +511,32 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const text = args.text as string
         const replyTo = args.reply_to as string | undefined
         const files = (args.files as string[] | undefined) ?? []
+        const requestedMsgType = args.msg_type as string | undefined
 
-        const msgId = await sendReply(chatId, text, replyTo)
+        let msgId: string
+        if (requestedMsgType && requestedMsgType !== 'interactive') {
+          // Send with explicit msg_type (text, post, image, file, etc.)
+          const content = requestedMsgType === 'text'
+            ? JSON.stringify({ text })
+            : text  // For other types, text should already be the JSON content
+          msgId = await sendLarkMessage(chatId, requestedMsgType, content, { replyToMessageId: replyTo })
+        } else {
+          // Default: interactive (card). Auto-detect if text is valid card JSON.
+          let cardContent: string
+          try {
+            const parsed = JSON.parse(text)
+            if (typeof parsed === 'object' && parsed !== null && (parsed.schema || parsed.config || parsed.elements || parsed.header)) {
+              // Already valid card JSON, send as-is
+              cardContent = text
+            } else {
+              cardContent = JSON.stringify(buildCard(text))
+            }
+          } catch {
+            // Not JSON — wrap in markdown card
+            cardContent = JSON.stringify(buildCard(text))
+          }
+          msgId = await sendLarkMessage(chatId, 'interactive', cardContent, { replyToMessageId: replyTo })
+        }
 
         // Remove typing indicator on reply
         if (_typingReactions.size > 0) {

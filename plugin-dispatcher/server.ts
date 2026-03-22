@@ -495,6 +495,20 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['chat_id', 'message_id'],
       },
     },
+    // v2: Permission prompt forwarding
+    ...(DAEMON_PORT ? [{
+      name: 'permission_prompt',
+      description: 'Forward a permission prompt to the Lark user for approval. Use this when you need the user\'s permission to use a tool or take an action. Returns "granted" or "denied".',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          chat_id: { type: 'string' as const, description: 'The chat ID to send the permission prompt to.' },
+          question: { type: 'string' as const, description: 'Description of what permission is being requested.' },
+          tool_name: { type: 'string' as const, description: 'Name of the tool that needs permission.' },
+        },
+        required: ['chat_id', 'question', 'tool_name'],
+      },
+    }] : []),
   ],
 }))
 
@@ -523,6 +537,34 @@ async function proxyToolCall(tool: string, args: Record<string, unknown>): Promi
   return await res.json() as any
 }
 
+// ── v2: Stream event helper ──
+
+/** Send a stream event to the daemon for streaming card updates. */
+async function sendStreamEvent(event: {
+  type: 'start' | 'tool_use' | 'text_delta' | 'done'
+  convKey: string
+  chatId?: string
+  replyToMessageId?: string
+  toolName?: string
+  toolInput?: unknown
+  text?: string
+}): Promise<void> {
+  if (!DAEMON_PORT) return
+  try {
+    await fetch(`http://localhost:${DAEMON_PORT}/stream-event`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+    })
+  } catch (e) {
+    log(`stream-event failed: ${e}`)
+  }
+}
+
+/** Track whether we've started a streaming card for the current convKey. */
+let _streamingStarted = false
+let _streamingChatId = ''
+
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
   const args = (req.params.arguments ?? {}) as Record<string, unknown>
 
@@ -530,7 +572,25 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   if (DISPATCHER_PORT && DAEMON_PORT) {
     try {
       log(`PROXY tool-call: ${req.params.name} → daemon :${DAEMON_PORT}`)
-      return await proxyToolCall(req.params.name, args)
+
+      // v2: Send tool_use stream event for non-reply tools (reply finalizes the card)
+      if (req.params.name !== 'reply' && req.params.name !== 'permission_prompt') {
+        void sendStreamEvent({
+          type: 'tool_use',
+          convKey: _currentConvKey,
+          toolName: req.params.name,
+          toolInput: args,
+        })
+      }
+
+      const result = await proxyToolCall(req.params.name, args)
+
+      // v2: If this was a reply, the streaming card was finalized by the daemon
+      if (req.params.name === 'reply') {
+        _streamingStarted = false
+      }
+
+      return result
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       return { content: [{ type: 'text', text: `${req.params.name} proxy failed: ${msg}` }], isError: true }
@@ -661,6 +721,18 @@ if (DISPATCHER_PORT > 0) {
           _currentConvKey = `${body.platform ?? 'lark'}:${body.meta.chat_id}${body.meta.thread_id ? '_thread_' + body.meta.thread_id : ''}`
           _currentPlatform = body.platform ?? 'lark'
           _currentMessageId = body.meta.message_id ?? ''
+
+          // v2: Start streaming card for this conversation
+          _streamingChatId = body.meta.chat_id
+          _streamingStarted = false
+          void sendStreamEvent({
+            type: 'start',
+            convKey: _currentConvKey,
+            chatId: body.meta.chat_id,
+            replyToMessageId: body.meta.message_id,
+          }).then(() => {
+            _streamingStarted = true
+          }).catch(() => {})
 
           // Push channel notification to Claude CLI
           void mcp.notification({

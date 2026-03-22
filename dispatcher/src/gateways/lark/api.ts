@@ -229,6 +229,220 @@ export class LarkApi {
       throw e
     }
   }
+
+  // ── Permission card ──
+
+  /**
+   * Send a permission prompt card with Allow/Deny buttons.
+   * Returns the message_id of the sent card.
+   */
+  async sendPermissionCard(
+    chatId: string,
+    card: Record<string, unknown>,
+    opts?: { replyToMessageId?: string },
+  ): Promise<string> {
+    try {
+      const content = JSON.stringify(card)
+      let res: any
+
+      if (opts?.replyToMessageId) {
+        res = await (this._client as any).im.message.reply({
+          path: { message_id: opts.replyToMessageId },
+          data: { msg_type: 'interactive', content },
+        })
+      } else {
+        res = await (this._client as any).im.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: { receive_id: chatId, msg_type: 'interactive', content },
+        })
+      }
+
+      const messageId = res?.data?.message_id ?? 'unknown'
+      log.info(TAG, `Permission card sent to ${chatId}: ${messageId}`)
+      return messageId
+    } catch (e) {
+      log.error(TAG, `Failed to send permission card to ${chatId}: ${e}`)
+      throw e
+    }
+  }
+
+  // ── CardKit streaming API ──
+
+  /**
+   * Create a card entity via cardkit API. Returns the card_id.
+   */
+  async createCardEntity(card: Record<string, unknown>): Promise<string> {
+    try {
+      const res = await (this._client as any).cardkit.v1.card.create({
+        data: { type: 'card_json', data: JSON.stringify(card) },
+      })
+      if (res?.code !== 0) {
+        throw new Error(`createCardEntity failed (code ${res?.code}): ${res?.msg ?? ''}`)
+      }
+      const cardId = res?.data?.card_id
+      if (!cardId) throw new Error('Card entity created but no card_id returned')
+      log.info(TAG, `Card entity created: ${cardId}`)
+      return cardId
+    } catch (e) {
+      log.error(TAG, `Failed to create card entity: ${e}`)
+      throw e
+    }
+  }
+
+  /**
+   * Send a card entity by card_id reference. Returns the message_id.
+   */
+  async sendCardByRef(
+    chatId: string,
+    cardId: string,
+    opts?: { replyToMessageId?: string },
+  ): Promise<string> {
+    try {
+      const content = JSON.stringify({ type: 'card', data: { card_id: cardId } })
+      let res: any
+
+      if (opts?.replyToMessageId) {
+        res = await (this._client as any).im.message.reply({
+          path: { message_id: opts.replyToMessageId },
+          data: { msg_type: 'interactive', content },
+        })
+      } else {
+        res = await (this._client as any).im.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: { receive_id: chatId, msg_type: 'interactive', content },
+        })
+      }
+
+      const messageId = res?.data?.message_id ?? 'unknown'
+      log.info(TAG, `Card ref ${cardId} sent to ${chatId}: ${messageId}`)
+      return messageId
+    } catch (e) {
+      log.error(TAG, `Failed to send card ref to ${chatId}: ${e}`)
+      throw e
+    }
+  }
+
+  /**
+   * Insert card elements (create elements within a card entity).
+   */
+  async insertCardElement(
+    cardId: string,
+    opts: {
+      type: 'insert_before' | 'insert_after' | 'append'
+      targetElementId?: string
+      elements: Record<string, unknown>[]
+      sequence: number
+    },
+  ): Promise<void> {
+    try {
+      const res = await (this._client as any).cardkit.v1.cardElement.create({
+        path: { card_id: cardId },
+        data: {
+          type: opts.type,
+          target_element_id: opts.targetElementId,
+          elements: JSON.stringify(opts.elements),
+          sequence: opts.sequence,
+        },
+      })
+      if (res?.code !== 0) {
+        throw new Error(`insertCardElement failed (code ${res?.code}): ${res?.msg ?? ''}`)
+      }
+    } catch (e) {
+      log.error(TAG, `Failed to insert card element: ${e}`)
+      throw e
+    }
+  }
+
+  /**
+   * Partially update a card element's properties.
+   */
+  async patchCardElement(
+    cardId: string,
+    elementId: string,
+    partial: Record<string, unknown>,
+    sequence: number,
+  ): Promise<void> {
+    try {
+      const res = await (this._client as any).cardkit.v1.cardElement.patch({
+        path: { card_id: cardId, element_id: elementId },
+        data: { partial_element: JSON.stringify(partial), sequence },
+      })
+      if (res?.code !== 0) {
+        throw new Error(`patchCardElement failed (code ${res?.code}): ${res?.msg ?? ''}`)
+      }
+    } catch (e) {
+      log.error(TAG, `Failed to patch card element: ${e}`)
+      throw e
+    }
+  }
+
+  /**
+   * Stream-update a text/markdown element's content (typewriter effect).
+   * Pass the FULL accumulated text — the platform computes the delta.
+   */
+  async updateCardElementContent(
+    cardId: string,
+    elementId: string,
+    content: string,
+    sequence: number,
+  ): Promise<void> {
+    try {
+      const res = await (this._client as any).cardkit.v1.cardElement.content({
+        path: { card_id: cardId, element_id: elementId },
+        data: { content, sequence },
+      })
+      if (res?.code !== 0) {
+        throw new Error(`updateCardElementContent failed (code ${res?.code}): ${res?.msg ?? ''}`)
+      }
+    } catch (e) {
+      log.error(TAG, `Failed to update card element content: ${e}`)
+      throw e
+    }
+  }
+
+  /**
+   * Delete a card element by ID.
+   */
+  async deleteCardElement(
+    cardId: string,
+    elementId: string,
+    sequence: number,
+  ): Promise<void> {
+    try {
+      const res = await (this._client as any).cardkit.v1.cardElement.delete({
+        path: { card_id: cardId, element_id: elementId },
+        data: { sequence },
+      })
+      if (res?.code !== 0) {
+        throw new Error(`deleteCardElement failed (code ${res?.code}): ${res?.msg ?? ''}`)
+      }
+    } catch (e) {
+      log.error(TAG, `Failed to delete card element: ${e}`)
+      throw e
+    }
+  }
+
+  /**
+   * Close streaming mode for a card entity.
+   */
+  async closeCardStreaming(cardId: string, sequence: number): Promise<void> {
+    try {
+      const res = await (this._client as any).cardkit.v1.card.settings({
+        path: { card_id: cardId },
+        data: {
+          settings: JSON.stringify({ config: { streaming_mode: false } }),
+          sequence,
+        },
+      })
+      if (res?.code !== 0) {
+        throw new Error(`closeCardStreaming failed (code ${res?.code}): ${res?.msg ?? ''}`)
+      }
+      log.info(TAG, `Streaming closed for card ${cardId}`)
+    } catch (e) {
+      log.error(TAG, `Failed to close card streaming: ${e}`)
+      throw e
+    }
+  }
 }
 
 // ── Buffer conversion helper ──

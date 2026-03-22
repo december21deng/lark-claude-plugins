@@ -2,6 +2,7 @@ import * as Lark from '@larksuiteoapi/node-sdk'
 import type { LarkConfig, Gateway, ParsedMessage, SendOpts } from '../../types.js'
 import { parseEvent, gate } from './receiver.js'
 import { LarkApi } from './api.js'
+import { handleCardAction } from '../../permission.js'
 import { log } from '../../utils/logger.js'
 
 const TAG = 'lark-gw'
@@ -45,6 +46,18 @@ export class LarkGateway implements Gateway {
     }
 
     dispatcher.register({
+      // v2: Card action callback for permission buttons
+      'card.action.trigger_v1': async (data: any) => {
+        log.info(TAG, `CARD ACTION: ${JSON.stringify(data?.action?.value ?? {}).slice(0, 200)}`)
+        const handled = handleCardAction(data)
+        if (handled) {
+          log.info(TAG, 'Card action handled as permission response')
+          return { toast: { type: 'success', content: '已处理' } }
+        }
+        log.info(TAG, 'Card action not recognized as permission response')
+        return {}
+      },
+
       'im.message.receive_v1': async (data: any) => {
         const msgId = data?.message?.message_id ?? 'no-id'
         const chatType = data?.message?.chat_type ?? 'unknown'
