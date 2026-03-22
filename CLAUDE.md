@@ -1,11 +1,27 @@
 # Development Guidelines
 
-## Lark/Feishu API
+## Third-Party API Development Rules
 
-**IMPORTANT**: Before implementing any Lark/Feishu feature or API call:
-1. Check the [Feishu Open Platform docs](https://open.feishu.cn/document/) or [Lark Open Platform docs](https://open.larksuite.com/document/)
-2. Use Context7 (`/websites/open_feishu_cn_document`) to query documentation
-3. Do NOT guess API parameters, msg_type values, or endpoint formats
+**MANDATORY**: Before implementing ANY third-party API call, SDK method, or integration feature:
+
+1. **Check official documentation first** — use the vendor's open platform docs or Context7
+2. **Never guess** API parameters, enum values, request/response formats, or method signatures
+3. **If you can't find it, ask the user** — don't assume or invent
+
+This applies to ALL external services, including but not limited to:
+- **Lark/Feishu**: [Feishu Open Platform](https://open.feishu.cn/document/) or Context7 (`/websites/open_feishu_cn_document`)
+- **Discord**: [Discord Developer Portal](https://discord.com/developers/docs) or Context7
+- **Claude Code CLI**: Check `claude --help` or [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code)
+- **MCP Protocol**: [MCP SDK docs](https://modelcontextprotocol.io)
+- **Any npm package**: Check the package's README or Context7 before using its API
+
+### Common mistakes to avoid
+- ❌ Inventing API enum values that don't exist (e.g., `raw_interactive` is not a real Lark msg_type)
+- ❌ Guessing SDK method signatures without checking docs
+- ❌ Assuming one platform's API works the same as another's
+- ❌ Using deprecated or non-existent endpoints
+
+## Lark/Feishu API
 
 ### Supported msg_type values (for im.message.create)
 - `text` — plain text
