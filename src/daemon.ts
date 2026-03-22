@@ -1,5 +1,5 @@
 import type { AppConfig, Gateway, ToolCallRequest } from './types.js'
-import { FeishuGateway } from './gateways/feishu/ws.js'
+import { LarkGateway } from './gateways/lark/ws.js'
 import { WorkerPool } from './pool.js'
 import { Router } from './router.js'
 import { log } from './utils/logger.js'
@@ -8,12 +8,12 @@ const TAG = 'daemon'
 
 export async function startDaemon(config: AppConfig): Promise<void> {
   log.info(TAG, '============================================================')
-  log.info(TAG, 'Feishu Dispatcher starting')
+  log.info(TAG, 'Lark Dispatcher starting')
 
   // ── Init gateways ──
   const gateways = new Map<string, Gateway>()
-  const feishuGw = new FeishuGateway(config.feishu)
-  gateways.set('feishu', feishuGw)
+  const larkGw = new LarkGateway(config.lark)
+  gateways.set('lark', larkGw)
 
   // ── Init pool (starts workers in background, daemon accepts messages immediately) ──
   const pool = new WorkerPool(config.pool, config.claude)
@@ -61,8 +61,8 @@ export async function startDaemon(config: AppConfig): Promise<void> {
               await gw.sendMessage(chatId, text, { replyToMessageId: replyTo || messageId })
 
               // Remove Typing indicator
-              if (messageId && gw instanceof FeishuGateway) {
-                await (gw as FeishuGateway).ackDone(messageId)
+              if (messageId && gw instanceof LarkGateway) {
+                await (gw as LarkGateway).ackDone(messageId)
               }
               log.info(TAG, `Reply sent to ${chatId}, typing removed for ${messageId ?? 'unknown'}`)
 

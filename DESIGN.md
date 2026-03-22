@@ -35,10 +35,10 @@
     │ (WebSocket, 唯一连接)
     ▼
 ┌──────────────────────────────────────┐
-│  Feishu Dispatcher Daemon            │
+│  Lark Dispatcher Daemon            │
 │                                      │
 │  ┌─ Gateway ──────────────────────┐  │
-│  │ feishu-gw (WebSocket + API)    │  │
+│  │ lark-gw (WebSocket + API)    │  │
 │  └────────────┬───────────────────┘  │
 │               │                      │
 │  ┌─ Core ─────▼──────────────────┐   │
@@ -70,15 +70,15 @@
 
 | 场景 | convKey 示例 |
 |------|-------------|
-| 飞书私聊 | `feishu:oc_abc123` |
-| 飞书群聊（不分话题） | `feishu:oc_def456` |
-| 飞书子话题 | `feishu:oc_def456_thread_omt_789` |
+| 飞书/Lark 私聊 | `lark:oc_abc123` |
+| 飞书/Lark 群聊（不分话题） | `lark:oc_def456` |
+| 飞书/Lark 子话题 | `lark:oc_def456_thread_omt_789` |
 
 ### 2.2 Worker Pool（tmux 管理）
 
 **固定 N 个 Claude CLI worker**，每个运行在独立的 tmux session 中：
 
-- Daemon 启动时自动创建 N 个 tmux session（`fd-worker-0` 到 `fd-worker-N`）
+- Daemon 启动时自动创建 N 个 tmux session（`lark-worker-0` 到 `lark-worker-N`）
 - 每个 session 运行 `claude --dangerously-load-development-channels --dangerously-skip-permissions`
 - 通过 `tmux send-keys Enter` 自动确认 development channels 提示
 - Trust 提示通过 `claude -p` 预信任目录，只需一次
@@ -94,9 +94,9 @@
 ```
 sessions.json:
 {
-  "feishu:oc_abc_thread_A": "session-uuid-111",
-  "feishu:oc_abc_thread_B": "session-uuid-222",
-  "feishu:oc_abc_thread_C": "session-uuid-333"
+  "lark:oc_abc_thread_A": "session-uuid-111",
+  "lark:oc_abc_thread_B": "session-uuid-222",
+  "lark:oc_abc_thread_C": "session-uuid-333"
 }
 ```
 
@@ -140,7 +140,7 @@ Daemon 关闭
 ## 3. 项目结构
 
 ```
-~/feishu-dispatcher/
+~/lark-dispatcher/
 ├── package.json
 ├── tsconfig.json
 ├── README.md
@@ -155,7 +155,7 @@ Daemon 关闭
 │   ├── types.ts                       # 共享类型
 │   ├── gateways/
 │   │   ├── types.ts
-│   │   └── feishu/
+│   │   └── lark/
 │   │       ├── ws.ts                  # 飞书 WebSocket + 事件处理
 │   │       ├── receiver.ts            # 消息解析 + 去重 + gate
 │   │       └── api.ts                 # 飞书 HTTP API
@@ -174,9 +174,9 @@ Daemon 关闭
 └── install.sh
 ```
 
-**运行时数据** `~/.feishu-dispatcher/`：
+**运行时数据** `~/.lark-dispatcher/`：
 ```
-~/.feishu-dispatcher/
+~/.lark-dispatcher/
 ├── config.json
 ├── sessions.json
 ├── daemon.pid
@@ -188,8 +188,8 @@ Daemon 关闭
 ~/.claude/plugins/
 ├── marketplaces/local-channels/
 │   ├── marketplace.json
-│   └── external_plugins/feishu-customized/ → ~/feishu-dispatcher/plugin/
-└── cache/local-channels/feishu-customized/0.0.1/ → ~/feishu-dispatcher/plugin/
+│   └── external_plugins/lark-customized/ → ~/lark-dispatcher/plugin/
+└── cache/local-channels/lark-customized/0.0.1/ → ~/lark-dispatcher/plugin/
 ```
 
 ## 4. 数据流
@@ -199,9 +199,9 @@ Daemon 关闭
 ```
 ┌─ 飞书用户发消息 ─────────────────────────────────────────────────┐
 │                                                                  │
-│  1. feishu-gw: 接收 im.message.receive_v1                        │
+│  1. lark-gw: 接收 im.message.receive_v1                        │
 │  2. receiver: 解析 + 去重 + gate 权限检查                         │
-│  3. feishu-gw: 添加 Typing ⌨️ 反应                               │
+│  3. lark-gw: 添加 Typing ⌨️ 反应                               │
 │  4. router: 计算 convKey，acquire Mutex                          │
 │  5. pool: getWorker(convKey)                                     │
 │     ├─ 有已分配 worker → health check → 健康则复用               │
@@ -240,24 +240,24 @@ Daemon 关闭
 10:10  thread_K 来了，池满！
        → thread_A 最久没用(10:00)
        → 保存 sessions["thread_A"] = "session-aaa"
-       → kill tmux fd-worker-0
-       → 新建 fd-worker-0，无 --resume（新对话）
+       → kill tmux lark-worker-0
+       → 新建 lark-worker-0，无 --resume（新对话）
        → thread_K 分配到 worker-0
 
 10:30  thread_A 回来了
        → thread_B 最久没用(10:01)
        → 保存 sessions["thread_B"] = "session-bbb"
-       → kill tmux fd-worker-1
-       → 新建 fd-worker-1 --resume session-aaa
+       → kill tmux lark-worker-1
+       → 新建 lark-worker-1 --resume session-aaa
        → thread_A 恢复完整上下文！
 ```
 
 ## 5. 配置
 
-`~/.feishu-dispatcher/config.json`:
+`~/.lark-dispatcher/config.json`:
 ```json
 {
-  "feishu": {
+  "lark": {
     "appId": "cli_xxx",
     "appSecret": "xxx",
     "domain": "feishu",
@@ -275,11 +275,11 @@ Daemon 关闭
   },
   "claude": {
     "bin": "/Users/mangliu/.local/bin/claude",
-    "pluginChannel": "plugin:feishu-customized@local-channels"
+    "pluginChannel": "plugin:lark-customized@local-channels"
   },
   "log": {
     "level": "info",
-    "dir": "~/.feishu-dispatcher/logs"
+    "dir": "~/.lark-dispatcher/logs"
   }
 }
 ```
@@ -288,14 +288,14 @@ Daemon 关闭
 
 ```bash
 # 一键启动（自动创建 10 个 tmux worker + 飞书连接）
-cd ~/feishu-dispatcher && bun run src/index.ts start
+cd ~/lark-dispatcher && bun run src/index.ts start
 
 # 查看状态
 bun run src/index.ts status
 
 # 查看 worker 终端
 tmux ls                        # 列出所有 worker
-tmux attach -t fd-worker-0     # 查看某个 worker
+tmux attach -t lark-worker-0     # 查看某个 worker
 
 # 停止
 bun run src/index.ts stop

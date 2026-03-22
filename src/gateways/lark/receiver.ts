@@ -1,8 +1,8 @@
-import type { ParsedMessage, FeishuConfig } from '../../types.js'
+import type { ParsedMessage, LarkConfig } from '../../types.js'
 import { markSeen } from '../../utils/dedup.js'
 import { log } from '../../utils/logger.js'
 
-const TAG = 'feishu-recv'
+const TAG = 'lark-recv'
 
 // ── Message text extraction ──
 
@@ -69,7 +69,7 @@ export function gate(
   chatType: 'private' | 'group',
   senderId: string,
   mentionedBot: boolean,
-  config: FeishuConfig
+  config: LarkConfig
 ): GateResult {
   const access = config.access
 
@@ -122,7 +122,7 @@ export function parseEvent(event: any, botOpenId?: string): ParsedMessage | null
   log.info(TAG, `msg=${msgId} chat=${chatId} type=${chatType} sender=${senderId} mentioned=${mentionedBot}`)
 
   return {
-    platform: 'feishu',
+    platform: 'lark',
     chatId,
     messageId: msgId,
     threadId,

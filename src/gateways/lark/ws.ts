@@ -1,28 +1,28 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
-import type { FeishuConfig, Gateway, ParsedMessage, SendOpts } from '../../types.js'
+import type { LarkConfig, Gateway, ParsedMessage, SendOpts } from '../../types.js'
 import { parseEvent, gate } from './receiver.js'
-import { FeishuApi } from './api.js'
+import { LarkApi } from './api.js'
 import { log } from '../../utils/logger.js'
 
-const TAG = 'feishu-gw'
+const TAG = 'lark-gw'
 
-export class FeishuGateway implements Gateway {
-  readonly platform = 'feishu'
+export class LarkGateway implements Gateway {
+  readonly platform = 'lark'
 
   private _wsClient: Lark.WSClient | null = null
-  private _api: FeishuApi
+  private _api: LarkApi
   private _botOpenId?: string
-  private _config: FeishuConfig
+  private _config: LarkConfig
 
   // Track ack reactions per message for cleanup
   private _ackReactions = new Map<string, string>() // messageId → reactionId
 
-  constructor(config: FeishuConfig) {
+  constructor(config: LarkConfig) {
     this._config = config
-    this._api = new FeishuApi(config)
+    this._api = new LarkApi(config)
   }
 
-  get api(): FeishuApi { return this._api }
+  get api(): LarkApi { return this._api }
 
   async start(onMessage: (msg: ParsedMessage) => void): Promise<void> {
     // Fetch bot open_id
@@ -76,7 +76,7 @@ export class FeishuGateway implements Gateway {
         if (result.action === 'pair') {
           await this._api.sendMessage(
             parsed.chatId,
-            `Pairing required — run in Claude Code:\n\n/feishu-customized:access pair ${result.code}`,
+            `Pairing required — run in Claude Code:\n\n/lark-customized:access pair ${result.code}`,
           )
           return {}
         }

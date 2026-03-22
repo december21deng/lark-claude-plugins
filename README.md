@@ -1,17 +1,17 @@
-# Feishu Dispatcher
+# Lark Dispatcher
 
 [中文文档](./README_CN.md) | [Design Doc](./DESIGN.md) | [设计文档](./DESIGN_CN.md)
 
-A hybrid dispatching system for Feishu (Lark) × Claude Code. Chat with Claude Code through Feishu with multi-session parallelism, context isolation, and full remote MCP support (Clay, Gmail, Calendar, etc.).
+A hybrid dispatching system for Lark × Claude Code. Chat with Claude Code through Lark with multi-session parallelism, context isolation, and full remote MCP support (Clay, Gmail, Calendar, etc.).
 
 ## Architecture
 
 ```
-Feishu → Daemon (single WebSocket) → Router → Worker Pool (N Claude CLIs)
+Lark → Daemon (single WebSocket) → Router → Worker Pool (N Claude CLIs)
                                                     ↑ each has full remote MCPs
 ```
 
-- **Daemon** holds the single Feishu WebSocket connection, receives all messages
+- **Daemon** holds the single Lark WebSocket connection, receives all messages
 - **Worker Pool** consists of N Claude CLI processes running in tmux sessions
 - Each Worker is a full Claude CLI main process, automatically loading all remote MCPs
 - Different conversations (threads) are assigned to different Workers with complete context isolation
@@ -21,11 +21,11 @@ Feishu → Daemon (single WebSocket) → Router → Worker Pool (N Claude CLIs)
 
 Claude Code's remote MCPs (Clay, Gmail, Calendar, etc.) are `type: "sdk"` — only available when Claude CLI runs as the **main process**. Subprocess approaches (like NeoClaw's `--input-format stream-json`) cannot load these MCPs.
 
-However, when each Claude CLI connects its own Feishu WebSocket, Feishu only delivers messages to one connection. The solution: a daemon holds the single WebSocket and routes messages to Workers via localhost HTTP.
+However, when each Claude CLI connects its own Lark WebSocket, Lark only delivers messages to one connection. The solution: a daemon holds the single WebSocket and routes messages to Workers via localhost HTTP.
 
 ```
                                      ┌→ Claude CLI Worker 1 :7100 (all MCPs)
-Feishu → Daemon (single WS) ────────┼→ Claude CLI Worker 2 :7101 (all MCPs)
+Lark → Daemon (single WS) ────────┼→ Claude CLI Worker 2 :7101 (all MCPs)
                                      └→ Claude CLI Worker N :710N (all MCPs)
 ```
 
@@ -35,7 +35,7 @@ Feishu → Daemon (single WS) ────────┼→ Claude CLI Worker 2
 - [Bun](https://bun.sh/) v1.0+
 - [Claude Code CLI](https://claude.ai/code) installed
 - [tmux](https://github.com/tmux/tmux) (`brew install tmux`)
-- Feishu/Lark self-built app (WebSocket mode)
+- Lark self-built app (WebSocket mode)
 
 ## Quick Start
 
@@ -47,9 +47,9 @@ cd lark-claude-plugins
 bash install.sh
 ```
 
-### 2. Configure Feishu App
+### 2. Configure Lark App
 
-Create a self-built app on [Feishu Open Platform](https://open.feishu.cn):
+Create a self-built app on [Lark Open Platform](https://open.larksuite.com):
 
 1. Create app → get App ID and App Secret
 2. Add capability → Bot
@@ -64,8 +64,8 @@ Create a self-built app on [Feishu Open Platform](https://open.feishu.cn):
 ### 3. Edit Configuration
 
 ```bash
-cp config.example.json ~/.feishu-dispatcher/config.json
-vim ~/.feishu-dispatcher/config.json
+cp config.example.json ~/.lark-dispatcher/config.json
+vim ~/.lark-dispatcher/config.json
 ```
 
 Fill in your `appId`, `appSecret`, `bin` path, and `groupAutoReply` chat IDs.
@@ -79,7 +79,7 @@ bun run src/index.ts start
 The daemon will automatically:
 1. Pre-trust the workspace directory
 2. Create N tmux worker sessions with auto-confirmation
-3. Connect Feishu WebSocket
+3. Connect Lark WebSocket
 4. Start receiving messages (as soon as the first worker is ready)
 
 ### 5. Verify
@@ -87,13 +87,13 @@ The daemon will automatically:
 ```bash
 bun run src/index.ts status          # Check status
 tmux ls                              # List workers
-tmux attach -t fd-worker-0           # Attach to worker (Ctrl+B D to detach)
-tail -f ~/.feishu-dispatcher/logs/$(date +%Y-%m-%d).log  # View logs
+tmux attach -t lark-worker-0           # Attach to worker (Ctrl+B D to detach)
+tail -f ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log  # View logs
 ```
 
 ## Usage
 
-### Feishu Commands
+### Lark Commands
 
 | Command | Function |
 |---------|----------|
@@ -142,7 +142,7 @@ Clay, Gmail, Google Calendar, Context7, and all MCPs connected in Claude Desktop
 | `pool.maxWorkers` | 10 | Number of workers |
 | `pool.basePort` | 7100 | Worker port range start |
 | `pool.daemonApiPort` | 8900 | Daemon HTTP API port |
-| `feishu.domain` | "feishu" | "feishu" or "lark" |
+| `lark.domain` | "lark" | "lark" or "lark" |
 | `log.level` | "info" | Log level |
 
 ## Stop
@@ -161,7 +161,7 @@ bun run src/index.ts stop
 bun run src/index.ts status
 curl http://localhost:7100/health
 ps aux | grep "lark-mcp\|bun.*server" | grep -v grep
-tail -50 ~/.feishu-dispatcher/logs/$(date +%Y-%m-%d).log
+tail -50 ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log
 ```
 </details>
 
@@ -169,10 +169,10 @@ tail -50 ~/.feishu-dispatcher/logs/$(date +%Y-%m-%d).log
 <summary>Worker startup failure</summary>
 
 ```bash
-tmux attach -t fd-worker-0
+tmux attach -t lark-worker-0
 # Manual test:
-FEISHU_DISPATCHER_PORT=7100 FEISHU_DAEMON_PORT=8900 claude \
-  --dangerously-load-development-channels plugin:feishu-customized@local-channels \
+LARK_DISPATCHER_PORT=7100 LARK_DAEMON_PORT=8900 claude \
+  --dangerously-load-development-channels plugin:lark-customized@local-channels \
   --dangerously-skip-permissions
 ```
 </details>
@@ -193,9 +193,9 @@ lsof -ti:7100 | xargs kill -9
 | `src/daemon.ts` | Daemon entry, HTTP server, signal handling |
 | `src/pool.ts` | Worker Pool: tmux management, assignment, eviction, resume |
 | `src/router.ts` | Message routing: convKey, Mutex queuing, slash commands |
-| `src/gateways/feishu/ws.ts` | Feishu WebSocket + event handling |
-| `src/gateways/feishu/receiver.ts` | Message parsing + dedup + access control |
-| `src/gateways/feishu/api.ts` | Feishu HTTP API (messages, reactions) |
+| `src/gateways/lark/ws.ts` | Lark WebSocket + event handling |
+| `src/gateways/lark/receiver.ts` | Message parsing + dedup + access control |
+| `src/gateways/lark/api.ts` | Lark HTTP API (messages, reactions) |
 | `plugin/server.ts` | Channel plugin: localhost HTTP + MCP notification bridge |
 
 ## License

@@ -5,7 +5,7 @@ import { SessionStore } from './session-store.js'
 import { log } from './utils/logger.js'
 
 const TAG = 'pool'
-const TMUX_PREFIX = 'fd-worker'
+const TMUX_PREFIX = 'lark-worker'
 const STARTUP_TIMEOUT_MS = 5 * 60 * 1000  // 5 minutes per worker
 const MAX_RETRIES = 3
 
@@ -307,7 +307,7 @@ export class WorkerPool {
     ]
     if (sessionId) args.push('--resume', sessionId)
     // Use export so env vars are inherited by Claude's child processes (plugin)
-    return `export FEISHU_DISPATCHER_PORT=${port} && export FEISHU_DAEMON_PORT=${this._poolConfig.daemonApiPort} && ${args.join(' ')}`
+    return `export LARK_DISPATCHER_PORT=${port} && export LARK_DAEMON_PORT=${this._poolConfig.daemonApiPort} && ${args.join(' ')}`
   }
 
   private _killTmux(idx: number): void {

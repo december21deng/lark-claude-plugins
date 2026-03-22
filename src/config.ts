@@ -3,7 +3,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import type { AppConfig } from './types.js'
 
-const CONFIG_DIR = join(homedir(), '.feishu-dispatcher')
+const CONFIG_DIR = join(homedir(), '.lark-dispatcher')
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json')
 
 export { CONFIG_DIR }
@@ -12,20 +12,20 @@ export function loadConfig(): AppConfig {
   const raw = readFileSync(CONFIG_FILE, 'utf8')
   const parsed = JSON.parse(raw) as Partial<AppConfig>
 
-  if (!parsed.feishu?.appId || !parsed.feishu?.appSecret) {
-    throw new Error(`config.json: feishu.appId and feishu.appSecret required`)
+  if (!parsed.lark?.appId || !parsed.lark?.appSecret) {
+    throw new Error(`config.json: lark.appId and lark.appSecret required`)
   }
 
   return {
-    feishu: {
-      appId: parsed.feishu.appId,
-      appSecret: parsed.feishu.appSecret,
-      domain: parsed.feishu.domain ?? 'feishu',
+    lark: {
+      appId: parsed.lark.appId,
+      appSecret: parsed.lark.appSecret,
+      domain: parsed.lark.domain ?? 'feishu',
       access: {
-        dmPolicy: parsed.feishu.access?.dmPolicy ?? 'pairing',
-        allowFrom: parsed.feishu.access?.allowFrom ?? [],
-        groups: parsed.feishu.access?.groups ?? {},
-        groupAutoReply: parsed.feishu.access?.groupAutoReply ?? [],
+        dmPolicy: parsed.lark.access?.dmPolicy ?? 'pairing',
+        allowFrom: parsed.lark.access?.allowFrom ?? [],
+        groups: parsed.lark.access?.groups ?? {},
+        groupAutoReply: parsed.lark.access?.groupAutoReply ?? [],
       },
     },
     pool: {
@@ -35,7 +35,7 @@ export function loadConfig(): AppConfig {
     },
     claude: {
       bin: parsed.claude?.bin ?? 'claude',
-      pluginChannel: parsed.claude?.pluginChannel ?? 'plugin:feishu-customized@local-channels',
+      pluginChannel: parsed.claude?.pluginChannel ?? 'plugin:lark-customized@local-channels',
       systemPrompt: parsed.claude?.systemPrompt,
     },
     log: {

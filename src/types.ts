@@ -1,7 +1,7 @@
 // ── Parsed message from any gateway ──
 
 export interface ParsedMessage {
-  platform: string        // 'feishu' | 'discord'
+  platform: string        // 'lark' | 'discord'
   chatId: string
   messageId: string
   threadId?: string
@@ -58,7 +58,7 @@ export interface ToolCallResponse {
 
 // ── Config ──
 
-export interface FeishuConfig {
+export interface LarkConfig {
   appId: string
   appSecret: string
   domain: 'feishu' | 'lark'
@@ -85,7 +85,7 @@ export interface ClaudeConfig {
 }
 
 export interface AppConfig {
-  feishu: FeishuConfig
+  lark: LarkConfig
   pool: PoolConfig
   claude: ClaudeConfig
   log: { level: string; dir: string }

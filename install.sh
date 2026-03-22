@@ -2,10 +2,10 @@
 set -e
 
 DISPATCHER_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONFIG_DIR="$HOME/.feishu-dispatcher"
+CONFIG_DIR="$HOME/.lark-dispatcher"
 PLUGIN_DIR="$DISPATCHER_DIR/plugin"
 
-echo "=== Feishu Dispatcher Install ==="
+echo "=== Lark Dispatcher Install ==="
 
 # 1. Create config directory
 mkdir -p "$CONFIG_DIR/logs"
@@ -14,7 +14,7 @@ mkdir -p "$CONFIG_DIR/logs"
 if [ ! -f "$CONFIG_DIR/config.json" ]; then
   cat > "$CONFIG_DIR/config.json" << 'CONF'
 {
-  "feishu": {
+  "lark": {
     "appId": "YOUR_APP_ID",
     "appSecret": "YOUR_APP_SECRET",
     "domain": "feishu",
@@ -32,16 +32,16 @@ if [ ! -f "$CONFIG_DIR/config.json" ]; then
   },
   "claude": {
     "bin": "claude",
-    "pluginChannel": "plugin:feishu-customized@local-channels"
+    "pluginChannel": "plugin:lark-customized@local-channels"
   },
   "log": {
     "level": "info",
-    "dir": "~/.feishu-dispatcher/logs"
+    "dir": "~/.lark-dispatcher/logs"
   }
 }
 CONF
   echo "✅ Created default config: $CONFIG_DIR/config.json"
-  echo "   ⚠️  Edit it with your Feishu app credentials!"
+  echo "   ⚠️  Edit it with your Lark app credentials!"
 else
   echo "✅ Config exists: $CONFIG_DIR/config.json"
 fi
@@ -53,13 +53,13 @@ cd "$DISPATCHER_DIR" && bun install --no-summary
 # 4. Ensure plugin is registered as local-channels marketplace
 PLUGINS_DIR="$HOME/.claude/plugins"
 MARKETPLACE_DIR="$PLUGINS_DIR/marketplaces/local-channels"
-CACHE_DIR="$PLUGINS_DIR/cache/local-channels/feishu-customized/0.0.1"
+CACHE_DIR="$PLUGINS_DIR/cache/local-channels/lark-customized/0.0.1"
 
 mkdir -p "$MARKETPLACE_DIR/external_plugins"
 mkdir -p "$(dirname "$CACHE_DIR")"
 
 # Symlink plugin source
-ln -sfn "$PLUGIN_DIR" "$MARKETPLACE_DIR/external_plugins/feishu-customized"
+ln -sfn "$PLUGIN_DIR" "$MARKETPLACE_DIR/external_plugins/lark-customized"
 ln -sfn "$PLUGIN_DIR" "$CACHE_DIR"
 
 # marketplace.json
@@ -67,8 +67,8 @@ cat > "$MARKETPLACE_DIR/marketplace.json" << 'MKT'
 {
   "plugins": [
     {
-      "name": "feishu-customized",
-      "description": "Feishu channel for Claude Code (dispatcher mode)",
+      "name": "lark-customized",
+      "description": "Lark channel for Claude Code (dispatcher mode)",
       "version": "0.0.1",
       "type": "external_plugin"
     }
@@ -96,8 +96,8 @@ if [ -f "$INSTALLED" ]; then
   bun -e "
     const fs = require('fs');
     const data = JSON.parse(fs.readFileSync('$INSTALLED','utf8'));
-    if (!data['feishu-customized@local-channels']) {
-      data['feishu-customized@local-channels'] = [{
+    if (!data['lark-customized@local-channels']) {
+      data['lark-customized@local-channels'] = [{
         scope: 'user',
         installPath: '$CACHE_DIR',
         version: '0.0.1',
@@ -109,7 +109,7 @@ if [ -f "$INSTALLED" ]; then
   " 2>/dev/null || true
 fi
 
-echo "✅ Plugin registered: feishu-customized@local-channels"
+echo "✅ Plugin registered: lark-customized@local-channels"
 
 # 5. Install plugin dependencies
 echo "Installing plugin dependencies..."

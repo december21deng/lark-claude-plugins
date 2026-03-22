@@ -1,8 +1,8 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
-import type { FeishuConfig, SendOpts } from '../../types.js'
+import type { LarkConfig, SendOpts } from '../../types.js'
 import { log } from '../../utils/logger.js'
 
-const TAG = 'feishu-api'
+const TAG = 'lark-api'
 
 function larkDomain(domain: string): Lark.Domain | string {
   if (domain === 'lark') return Lark.Domain.Lark
@@ -10,10 +10,10 @@ function larkDomain(domain: string): Lark.Domain | string {
   return domain.replace(/\/+$/, '')
 }
 
-export class FeishuApi {
+export class LarkApi {
   private _client: Lark.Client
 
-  constructor(private config: FeishuConfig) {
+  constructor(private config: LarkConfig) {
     this._client = new Lark.Client({
       appId: config.appId,
       appSecret: config.appSecret,
