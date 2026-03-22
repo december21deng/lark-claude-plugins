@@ -1,224 +1,202 @@
 # Feishu Dispatcher
 
-飞书 × Claude Code 混合调度系统。通过飞书与 Claude Code 交互，支持多会话并行、上下文隔离、远程 MCP（Clay、Gmail、Calendar 等）。
+[中文文档](./README_CN.md) | [Design Doc](./DESIGN.md) | [设计文档](./DESIGN_CN.md)
 
-## 架构
+A hybrid dispatching system for Feishu (Lark) × Claude Code. Chat with Claude Code through Feishu with multi-session parallelism, context isolation, and full remote MCP support (Clay, Gmail, Calendar, etc.).
+
+## Architecture
 
 ```
-飞书 → Daemon（唯一 WebSocket）→ 路由 → Worker Pool（10 个 Claude CLI）
-                                              ↑ 每个都有完整远程 MCP
+Feishu → Daemon (single WebSocket) → Router → Worker Pool (N Claude CLIs)
+                                                    ↑ each has full remote MCPs
 ```
 
-- **Daemon** 持有唯一的飞书 WebSocket 连接，接收所有消息
-- **Worker Pool** 由 10 个 Claude CLI 进程组成，运行在 tmux session 中
-- 每个 Worker 是完整的 Claude CLI 主进程，自动加载所有远程 MCP
-- 不同对话（thread）分配到不同 Worker，上下文完全隔离
-- 驱逐时 kill + `--resume` 重建，上下文无损恢复
+- **Daemon** holds the single Feishu WebSocket connection, receives all messages
+- **Worker Pool** consists of N Claude CLI processes running in tmux sessions
+- Each Worker is a full Claude CLI main process, automatically loading all remote MCPs
+- Different conversations (threads) are assigned to different Workers with complete context isolation
+- On eviction: kill + `--resume` rebuilds context losslessly
 
-## 前置条件
+## Why This Architecture?
+
+Claude Code's remote MCPs (Clay, Gmail, Calendar, etc.) are `type: "sdk"` — only available when Claude CLI runs as the **main process**. Subprocess approaches (like NeoClaw's `--input-format stream-json`) cannot load these MCPs.
+
+However, when each Claude CLI connects its own Feishu WebSocket, Feishu only delivers messages to one connection. The solution: a daemon holds the single WebSocket and routes messages to Workers via localhost HTTP.
+
+```
+                                     ┌→ Claude CLI Worker 1 :7100 (all MCPs)
+Feishu → Daemon (single WS) ────────┼→ Claude CLI Worker 2 :7101 (all MCPs)
+                                     └→ Claude CLI Worker N :710N (all MCPs)
+```
+
+## Prerequisites
 
 - macOS
 - [Bun](https://bun.sh/) v1.0+
-- [Claude Code CLI](https://claude.ai/code) 已安装
+- [Claude Code CLI](https://claude.ai/code) installed
 - [tmux](https://github.com/tmux/tmux) (`brew install tmux`)
-- 飞书开放平台自建应用（WebSocket 模式）
+- Feishu/Lark self-built app (WebSocket mode)
 
-## 快速开始
+## Quick Start
 
-### 1. 安装
+### 1. Install
 
 ```bash
-cd ~/feishu-dispatcher
+git clone https://github.com/december21deng/lark-claude-plugins.git
+cd lark-claude-plugins
 bash install.sh
 ```
 
-### 2. 配置飞书应用
+### 2. Configure Feishu App
 
-在 [飞书开放平台](https://open.feishu.cn) 创建自建应用：
+Create a self-built app on [Feishu Open Platform](https://open.feishu.cn):
 
-1. 创建应用 → 获取 App ID 和 App Secret
-2. 添加能力 → 机器人
-3. 权限管理 → 开通 `im:message`、`im:message:send_as_bot`、`im:resource`
-4. 事件与回调 → 订阅方式选 **长连接（WebSocket）**
-5. 订阅事件 → `im.message.receive_v1`
+1. Create app → get App ID and App Secret
+2. Add capability → Bot
+3. Permissions → enable:
+   - `im:message` — send/receive messages
+   - `im:message:send_as_bot` — send as bot
+   - `im:resource` — upload/download resources
+   - `im:message.group_msg:readonly` — receive all group messages (not just @mentions)
+4. Events & Callbacks → choose **Long Connection (WebSocket)** mode
+5. Subscribe event → `im.message.receive_v1`
 
-### 3. 编辑配置
+### 3. Edit Configuration
 
 ```bash
+cp config.example.json ~/.feishu-dispatcher/config.json
 vim ~/.feishu-dispatcher/config.json
 ```
 
-```json
-{
-  "feishu": {
-    "appId": "cli_你的appId",
-    "appSecret": "你的appSecret",
-    "domain": "feishu",
-    "access": {
-      "dmPolicy": "open",
-      "allowFrom": [],
-      "groups": {},
-      "groupAutoReply": ["oc_你的群chatId"]
-    }
-  },
-  "pool": {
-    "maxWorkers": 10,
-    "basePort": 7100,
-    "daemonApiPort": 8900
-  },
-  "claude": {
-    "bin": "/Users/你的用户名/.local/bin/claude",
-    "pluginChannel": "plugin:feishu-customized@local-channels"
-  },
-  "log": {
-    "level": "info",
-    "dir": "/Users/你的用户名/.feishu-dispatcher/logs"
-  }
-}
-```
+Fill in your `appId`, `appSecret`, `bin` path, and `groupAutoReply` chat IDs.
 
-### 4. 启动
+### 4. Start
 
 ```bash
-cd ~/feishu-dispatcher && bun run src/index.ts start
+bun run src/index.ts start
 ```
 
-Daemon 会自动：
-1. 预信任工作目录
-2. 创建 10 个 tmux worker session
-3. 自动确认所有启动提示
-4. 连接飞书 WebSocket
-5. 开始接收消息
+The daemon will automatically:
+1. Pre-trust the workspace directory
+2. Create N tmux worker sessions with auto-confirmation
+3. Connect Feishu WebSocket
+4. Start receiving messages (as soon as the first worker is ready)
 
-### 5. 验证
+### 5. Verify
 
 ```bash
-# 查看状态
+bun run src/index.ts status          # Check status
+tmux ls                              # List workers
+tmux attach -t fd-worker-0           # Attach to worker (Ctrl+B D to detach)
+tail -f ~/.feishu-dispatcher/logs/$(date +%Y-%m-%d).log  # View logs
+```
+
+## Usage
+
+### Feishu Commands
+
+| Command | Function |
+|---------|----------|
+| `/clear` | Clear current conversation, start fresh |
+| `/new` | Same as /clear |
+| `/status` | Show worker pool status |
+| `/help` | Help |
+
+### Multi-Session
+
+- **DM** → each user's DM gets its own worker
+- **Group thread** → each thread gets its own worker
+- **Group (no thread)** → the whole group shares one worker
+- Up to N parallel conversations (configure `maxWorkers`)
+- When pool is full, least recently used conversation is evicted (context restored via `--resume`)
+
+### Worker Pool Management
+
+```
+thread_A msg 1 → worker-0 (newly assigned)
+thread_A msg 2 → worker-0 (reused, context continues)
+thread_B msg 1 → worker-1 (idle worker assigned)
+...pool full...
+thread_C arrives → evict oldest → kill → restart with --resume → serve thread_C
+thread_A returns → evict oldest → restart with --resume session_A → context restored
+```
+
+### Access Control
+
+| Setting | Description |
+|---------|-------------|
+| `dmPolicy: "open"` | Anyone can DM the bot |
+| `dmPolicy: "pairing"` | Requires pairing code |
+| `dmPolicy: "disabled"` | DM disabled |
+| `groupAutoReply: ["oc_xxx"]` | These groups reply without @mention |
+
+### Remote MCPs
+
+Each Worker automatically loads all connected remote MCPs:
+Clay, Gmail, Google Calendar, Context7, and all MCPs connected in Claude Desktop.
+
+## Configuration Reference
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `pool.maxWorkers` | 10 | Number of workers |
+| `pool.basePort` | 7100 | Worker port range start |
+| `pool.daemonApiPort` | 8900 | Daemon HTTP API port |
+| `feishu.domain` | "feishu" | "feishu" or "lark" |
+| `log.level` | "info" | Log level |
+
+## Stop
+
+```bash
+# Ctrl+C in daemon terminal, or:
+bun run src/index.ts stop
+```
+
+## Troubleshooting
+
+<details>
+<summary>Messages not getting replies</summary>
+
+```bash
 bun run src/index.ts status
-
-# 查看 worker 列表
-tmux ls
-
-# 查看某个 worker 的终端
-tmux attach -t fd-worker-0
-# (Ctrl+B D 退出 tmux attach)
-
-# 查看日志
-tail -f ~/.feishu-dispatcher/logs/$(date +%Y-%m-%d).log
-```
-
-在飞书中私聊或 @机器人 发消息，应该收到回复。
-
-## 使用
-
-### 飞书命令
-
-| 命令 | 功能 |
-|------|------|
-| `/clear` | 清除当前对话，重新开始 |
-| `/new` | 同 /clear |
-| `/status` | 显示 worker 池状态 |
-| `/help` | 帮助 |
-
-### 多会话
-
-- **私聊** → 每个用户的私聊分配到独立 worker
-- **群聊话题** → 每个话题（thread）分配到独立 worker
-- **群聊（无话题）** → 整个群共享一个 worker
-- 最多 10 个并行对话（可在 config 中调整 `maxWorkers`）
-- 超过 10 个时，最久未活跃的对话被驱逐（上下文通过 `--resume` 恢复）
-
-### 权限控制
-
-`config.json` 中的 `access` 配置：
-
-| 设置 | 说明 |
-|------|------|
-| `dmPolicy: "open"` | 任何人都可以私聊 |
-| `dmPolicy: "pairing"` | 需要配对码确认 |
-| `dmPolicy: "disabled"` | 禁止私聊 |
-| `groupAutoReply: ["oc_xxx"]` | 这些群不需要 @mention 就回复 |
-
-### 远程 MCP
-
-每个 Worker 是 Claude CLI 主进程，自动加载所有已连接的远程 MCP：
-
-- Clay（公司信息查询）
-- Gmail（邮件读写）
-- Google Calendar（日程管理）
-- Context7（文档查询）
-- 所有在 Claude Desktop 中已连接的 MCP
-
-## 停止
-
-```bash
-# 方式 1: Ctrl+C（在 daemon 终端）
-# 方式 2: 命令
-cd ~/feishu-dispatcher && bun run src/index.ts stop
-```
-
-会自动保存所有 session ID 并清理 tmux session。
-
-## 配置参考
-
-| 字段 | 默认值 | 说明 |
-|------|--------|------|
-| `pool.maxWorkers` | 10 | Worker 数量 |
-| `pool.basePort` | 7100 | Worker 端口起始 |
-| `pool.daemonApiPort` | 8900 | Daemon HTTP API 端口 |
-| `feishu.domain` | "feishu" | "feishu" 或 "lark" |
-| `log.level` | "info" | 日志级别 |
-
-## 故障排查
-
-### 消息不回复
-```bash
-# 1. 检查 daemon 是否在运行
-bun run src/index.ts status
-
-# 2. 检查 worker 是否健康
 curl http://localhost:7100/health
-
-# 3. 检查是否有其他进程抢飞书 WebSocket
 ps aux | grep "lark-mcp\|bun.*server" | grep -v grep
-
-# 4. 查看日志
 tail -50 ~/.feishu-dispatcher/logs/$(date +%Y-%m-%d).log
 ```
+</details>
 
-### Worker 启动失败
+<details>
+<summary>Worker startup failure</summary>
+
 ```bash
-# 查看 worker 终端
 tmux attach -t fd-worker-0
-
-# 手动启动测试
-FEISHU_DISPATCHER_PORT=7100 FEISHU_DAEMON_PORT=8900 claude --dangerously-load-development-channels plugin:feishu-customized@local-channels --dangerously-skip-permissions
+# Manual test:
+FEISHU_DISPATCHER_PORT=7100 FEISHU_DAEMON_PORT=8900 claude \
+  --dangerously-load-development-channels plugin:feishu-customized@local-channels \
+  --dangerously-skip-permissions
 ```
+</details>
 
-### 端口被占用
+<details>
+<summary>Port in use</summary>
+
 ```bash
-# 释放端口
 lsof -ti:8900 | xargs kill -9
 lsof -ti:7100 | xargs kill -9
 ```
+</details>
 
-## 开发
+## Code Structure
 
-### 代码结构
-
-| 文件 | 职责 |
-|------|------|
-| `src/daemon.ts` | Daemon 入口、HTTP server、信号处理 |
-| `src/pool.ts` | Worker Pool：tmux 管理、分配、驱逐、resume |
-| `src/router.ts` | 消息路由：convKey 计算、Mutex 排队、斜杠命令 |
-| `src/gateways/feishu/ws.ts` | 飞书 WebSocket 连接 + 事件处理 |
-| `src/gateways/feishu/receiver.ts` | 消息解析 + 去重 + gate 权限控制 |
-| `src/gateways/feishu/api.ts` | 飞书 HTTP API（发消息、表情） |
-| `plugin/server.ts` | Channel 插件：localhost HTTP + MCP notification |
-
-### 设计文档
-
-详见 [feishu-dispatcher-design.md](../feishu-dispatcher-design.md)
+| File | Responsibility |
+|------|---------------|
+| `src/daemon.ts` | Daemon entry, HTTP server, signal handling |
+| `src/pool.ts` | Worker Pool: tmux management, assignment, eviction, resume |
+| `src/router.ts` | Message routing: convKey, Mutex queuing, slash commands |
+| `src/gateways/feishu/ws.ts` | Feishu WebSocket + event handling |
+| `src/gateways/feishu/receiver.ts` | Message parsing + dedup + access control |
+| `src/gateways/feishu/api.ts` | Feishu HTTP API (messages, reactions) |
+| `plugin/server.ts` | Channel plugin: localhost HTTP + MCP notification bridge |
 
 ## License
 
