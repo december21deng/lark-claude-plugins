@@ -44,6 +44,7 @@ export class LarkApi {
       const msgType = opts?.msgType ?? 'interactive'
       let finalMsgType: string = msgType
       let content: string
+      let isCardJson = false
 
       switch (msgType) {
         case 'text':
@@ -97,7 +98,6 @@ export class LarkApi {
         default:
           finalMsgType = 'interactive'
           // Auto-detect: if text is valid card JSON, pass through
-          let isCardJson = false
           if (text.trimStart().startsWith('{')) {
             try {
               const parsed = JSON.parse(text)
@@ -114,16 +114,36 @@ export class LarkApi {
           break
       }
 
-      if (opts?.replyToMessageId) {
-        await (this._client as any).im.message.reply({
-          path: { message_id: opts.replyToMessageId },
-          data: { msg_type: finalMsgType, content },
-        })
-      } else {
-        await (this._client as any).im.message.create({
-          params: { receive_id_type: 'chat_id' },
-          data: { receive_id: chatId, msg_type: finalMsgType, content },
-        })
+      // Send with validation fallback: if card JSON fails, retry as markdown card
+      const sendOnce = async (type: string, body: string) => {
+        if (opts?.replyToMessageId) {
+          await (this._client as any).im.message.reply({
+            path: { message_id: opts.replyToMessageId },
+            data: { msg_type: type, content: body },
+          })
+        } else {
+          await (this._client as any).im.message.create({
+            params: { receive_id_type: 'chat_id' },
+            data: { receive_id: chatId, msg_type: type, content: body },
+          })
+        }
+      }
+
+      try {
+        await sendOnce(finalMsgType, content)
+      } catch (sendErr: any) {
+        // If interactive card JSON failed (400), fallback to markdown card wrapping the raw text
+        if (finalMsgType === 'interactive' && isCardJson) {
+          log.warn(TAG, `Card JSON rejected by Lark API, falling back to markdown card: ${sendErr}`)
+          const fallback = JSON.stringify({
+            schema: '2.0',
+            config: { wide_screen_mode: true },
+            body: { elements: [{ tag: 'markdown', content: text }] },
+          })
+          await sendOnce('interactive', fallback)
+        } else {
+          throw sendErr
+        }
       }
 
       log.info(TAG, `Sent message to ${chatId}${opts?.replyToMessageId ? ` (reply to ${opts.replyToMessageId})` : ''}`)
