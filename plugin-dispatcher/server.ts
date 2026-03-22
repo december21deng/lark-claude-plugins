@@ -52,12 +52,10 @@ try {
 const APP_ID = process.env.LARK_APP_ID
 const APP_SECRET = process.env.LARK_APP_SECRET
 const DOMAIN = (process.env.LARK_DOMAIN ?? 'feishu') as 'feishu' | 'lark'
-const DAEMON_PORT = process.env.LARK_DAEMON_PORT
-  ? Number(process.env.LARK_DAEMON_PORT)
-  : undefined
+const _isDispatcherMode = !!process.env.LARK_DAEMON_PORT
 
 // In dispatcher mode, credentials are not required (daemon handles Lark API)
-if (!DAEMON_PORT && (!APP_ID || !APP_SECRET)) {
+if (!_isDispatcherMode && (!APP_ID || !APP_SECRET)) {
   process.stderr.write(
     `lark channel: LARK_APP_ID and LARK_APP_SECRET required\n` +
     `  set in ${ENV_FILE}\n` +
