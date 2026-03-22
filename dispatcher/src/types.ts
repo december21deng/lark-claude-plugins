@@ -25,7 +25,8 @@ export interface ParsedMessage {
 
 // ── Gateway interface ──
 
-export type MsgType = 'text' | 'interactive'
+// All Lark-supported msg_type values
+export type MsgType = 'text' | 'post' | 'image' | 'file' | 'audio' | 'media' | 'sticker' | 'interactive' | 'share_chat' | 'share_user'
 
 export interface SendOpts {
   replyToMessageId?: string

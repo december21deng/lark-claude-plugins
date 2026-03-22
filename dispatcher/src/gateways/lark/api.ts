@@ -42,36 +42,76 @@ export class LarkApi {
   async sendMessage(chatId: string, text: string, opts?: SendOpts): Promise<void> {
     try {
       const msgType = opts?.msgType ?? 'interactive'
-      let finalMsgType: string
+      let finalMsgType: string = msgType
       let content: string
 
-      if (msgType === 'text') {
-        finalMsgType = 'text'
-        content = JSON.stringify({ text })
-      } else {
-        finalMsgType = 'interactive'
-        // Auto-detect: if text is already a valid card JSON, pass through directly
-        // Otherwise wrap in a markdown card
-        let isCardJson = false
-        if (text.trimStart().startsWith('{')) {
-          try {
-            const parsed = JSON.parse(text)
-            if (parsed.schema || parsed.config || parsed.header || parsed.elements) {
-              isCardJson = true
-            }
-          } catch {}
-        }
+      switch (msgType) {
+        case 'text':
+          content = JSON.stringify({ text })
+          break
 
-        if (isCardJson) {
-          content = text
-        } else {
-          const card = {
+        case 'post':
+          // text should be post JSON: {"zh_cn":{"title":"...","content":[...]}}
+          // If it's already JSON, pass through; otherwise wrap as simple post
+          if (text.trimStart().startsWith('{')) {
+            content = text
+          } else {
+            content = JSON.stringify({
+              zh_cn: { title: '', content: [[{ tag: 'text', text }]] }
+            })
+          }
+          break
+
+        case 'image':
+          // text should be image_key
+          content = JSON.stringify({ image_key: text })
+          break
+
+        case 'file':
+          // text should be file_key
+          content = JSON.stringify({ file_key: text })
+          break
+
+        case 'audio':
+          content = JSON.stringify({ file_key: text })
+          break
+
+        case 'media':
+          // text should be JSON with file_key and image_key
+          content = text.trimStart().startsWith('{') ? text : JSON.stringify({ file_key: text })
+          break
+
+        case 'sticker':
+          content = JSON.stringify({ file_key: text })
+          break
+
+        case 'share_chat':
+          content = JSON.stringify({ chat_id: text })
+          break
+
+        case 'share_user':
+          content = JSON.stringify({ user_id: text })
+          break
+
+        case 'interactive':
+        default:
+          finalMsgType = 'interactive'
+          // Auto-detect: if text is valid card JSON, pass through
+          let isCardJson = false
+          if (text.trimStart().startsWith('{')) {
+            try {
+              const parsed = JSON.parse(text)
+              if (parsed.schema || parsed.config || parsed.header || parsed.elements) {
+                isCardJson = true
+              }
+            } catch {}
+          }
+          content = isCardJson ? text : JSON.stringify({
             schema: '2.0',
             config: { wide_screen_mode: true },
             body: { elements: [{ tag: 'markdown', content: text }] },
-          }
-          content = JSON.stringify(card)
-        }
+          })
+          break
       }
 
       if (opts?.replyToMessageId) {

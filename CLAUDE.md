@@ -20,6 +20,15 @@
 - `share_user` — personal card
 - `system` — system message
 
+### Reply tool msg_type usage
+The reply tool's `msg_type` parameter controls the output format. AI should choose the best type per scenario:
+- `text` — short replies ("好的", "收到"), content: `{"text": "..."}`
+- `post` — rich text with formatting, content: `{"zh_cn": {"title": "...", "content": [[...]]}}`
+- `image` — send image by image_key, content: `{"image_key": "img_xxx"}`
+- `file` — send file by file_key, content: `{"file_key": "file_xxx"}`
+- `interactive` — (default) markdown card or custom card JSON
+- Other types: `audio`, `media`, `sticker`, `share_chat`, `share_user`
+
 ### Card JSON auto-detection
 When sending `interactive` messages, if the text content is valid card JSON (contains `schema`, `config`, `header`, or `elements` keys), it is sent as-is. Otherwise it is wrapped in a markdown card automatically.
 
