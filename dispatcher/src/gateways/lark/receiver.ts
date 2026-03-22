@@ -1,4 +1,4 @@
-import type { ParsedMessage, LarkConfig } from '../../types.js'
+import type { ParsedMessage, LarkConfig, Attachment } from '../../types.js'
 import { markSeen } from '../../utils/dedup.js'
 import { log } from '../../utils/logger.js'
 
@@ -15,6 +15,41 @@ function extractText(content: string, msgType: string): string {
   } catch { return content }
 }
 
+/** Extract image/file keys from message content based on msg_type */
+function extractAttachments(content: string, msgType: string): Attachment[] {
+  try {
+    const p = JSON.parse(content) as Record<string, unknown>
+    switch (msgType) {
+      case 'image':
+        return p['image_key'] ? [{ type: 'image', imageKey: p['image_key'] as string }] : []
+      case 'file':
+        return p['file_key'] ? [{ type: 'file', fileKey: p['file_key'] as string, fileName: p['file_name'] as string }] : []
+      case 'post':
+        return extractRichTextImages(content)
+      default:
+        return []
+    }
+  } catch { return [] }
+}
+
+/** Extract image_key entries from rich text (post) content */
+function extractRichTextImages(content: string): Attachment[] {
+  try {
+    const parsed = JSON.parse(content) as {
+      content?: Array<Array<{ tag: string; image_key?: string }>>
+    }
+    const attachments: Attachment[] = []
+    for (const para of parsed.content ?? []) {
+      for (const el of para) {
+        if (el.tag === 'img' && el.image_key) {
+          attachments.push({ type: 'image', imageKey: el.image_key })
+        }
+      }
+    }
+    return attachments
+  } catch { return [] }
+}
+
 function extractRichText(content: string): string {
   try {
     const parsed = JSON.parse(content) as {
@@ -22,7 +57,7 @@ function extractRichText(content: string): string {
       content?: Array<Array<{
         tag: string; text?: string; href?: string
         user_id?: string; user_name?: string
-        language?: string; style?: string[]
+        language?: string; image_key?: string; style?: string[]
       }>>
     }
     let text = parsed.title ? `# ${parsed.title}\n\n` : ''
@@ -33,6 +68,7 @@ function extractRichText(content: string): string {
         else if (el.tag === 'code_block') text += `\`\`\`${el.language ?? ''}\n${el.text ?? ''}\`\`\``
         else if (el.tag === 'a') text += `[${el.text ?? el.href ?? ''}](${el.href ?? ''})`
         else if (el.tag === 'at') text += el.user_name ? `@${el.user_name}` : (el.user_id ?? '')
+        else if (el.tag === 'img') text += '[图片]'
       }
       text += '\n'
     }
@@ -110,16 +146,18 @@ export function parseEvent(event: any, botOpenId?: string): ParsedMessage | null
   const threadId = event.message.thread_id as string | undefined
   const mentionedBot = isBotMentioned(event, botOpenId)
 
-  const rawText = extractText(
-    event.message.content ?? '{}',
-    event.message.message_type ?? 'text'
-  )
+  const msgType = event.message.message_type ?? 'text'
+  const rawContent = event.message.content ?? '{}'
+
+  const rawText = extractText(rawContent, msgType)
+  const attachments = extractAttachments(rawContent, msgType)
 
   // Build content
   let text = rawText
-  if (!text) text = '(attachment)'
+  if (!text && attachments.length) text = `[${msgType} message]`
+  else if (!text) text = '(attachment)'
 
-  log.info(TAG, `msg=${msgId} chat=${chatId} type=${chatType} sender=${senderId} mentioned=${mentionedBot}`)
+  log.info(TAG, `msg=${msgId} chat=${chatId} type=${chatType} sender=${senderId} mentioned=${mentionedBot} attachments=${attachments.length}`)
 
   return {
     platform: 'lark',
@@ -131,5 +169,6 @@ export function parseEvent(event: any, botOpenId?: string): ParsedMessage | null
     text,
     chatType,
     mentionedBot,
+    ...(attachments.length ? { attachments } : {}),
   }
 }

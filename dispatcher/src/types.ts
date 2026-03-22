@@ -1,3 +1,13 @@
+// ── Attachment from incoming message ──
+
+export interface Attachment {
+  type: 'image' | 'file'
+  imageKey?: string
+  fileKey?: string
+  fileName?: string
+  localPath?: string
+}
+
 // ── Parsed message from any gateway ──
 
 export interface ParsedMessage {
@@ -10,7 +20,7 @@ export interface ParsedMessage {
   text: string
   chatType: 'private' | 'group'
   mentionedBot: boolean
-  attachments?: string[]
+  attachments?: Attachment[]
 }
 
 // ── Gateway interface ──
@@ -25,6 +35,9 @@ export interface Gateway {
   start(onMessage: (msg: ParsedMessage) => void): Promise<void>
   stop(): Promise<void>
   sendMessage(chatId: string, text: string, opts?: SendOpts): Promise<void>
+  sendImage(chatId: string, imageKey: string, opts?: SendOpts): Promise<void>
+  downloadImage(messageId: string, imageKey: string): Promise<Buffer>
+  uploadImage(imagePath: string): Promise<string>
   addReaction(chatId: string, messageId: string, emoji: string): Promise<string | null>
   removeReaction(chatId: string, messageId: string, reactionId: string): Promise<void>
   fetchMessages(chatId: string, limit: number): Promise<Array<{ id: string; text: string; user: string }>>

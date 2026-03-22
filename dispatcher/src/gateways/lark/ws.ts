@@ -136,4 +136,16 @@ export class LarkGateway implements Gateway {
   async fetchMessages(chatId: string, limit: number) {
     return this._api.fetchMessages(chatId, limit)
   }
+
+  async sendImage(chatId: string, imageKey: string, opts?: SendOpts): Promise<void> {
+    await this._api.sendImage(chatId, imageKey, opts)
+  }
+
+  async downloadImage(messageId: string, imageKey: string): Promise<Buffer> {
+    return this._api.downloadImage(messageId, imageKey)
+  }
+
+  async uploadImage(imagePath: string): Promise<string> {
+    return this._api.uploadImage(imagePath)
+  }
 }

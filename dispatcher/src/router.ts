@@ -45,7 +45,7 @@ export class Router {
             user_id: msg.senderId,
             ts: String(Date.now()),
             ...(msg.threadId ? { thread_id: msg.threadId } : {}),
-            ...(msg.attachments?.length ? { attachments: msg.attachments.join('; ') } : {}),
+            ...(msg.attachments?.length ? { attachments: msg.attachments.map(a => a.localPath ?? a.imageKey ?? a.fileKey ?? '').filter(Boolean).join('; ') } : {}),
           },
         }),
       })

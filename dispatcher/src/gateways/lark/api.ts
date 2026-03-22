@@ -1,4 +1,6 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
+import { readFileSync } from 'fs'
+import { Readable } from 'stream'
 import type { LarkConfig, SendOpts } from '../../types.js'
 import { log } from '../../utils/logger.js'
 
@@ -107,4 +109,86 @@ export class LarkApi {
       return []
     }
   }
+
+  // ── Image methods ──
+
+  /** Download an image resource from a message */
+  async downloadImage(messageId: string, imageKey: string): Promise<Buffer> {
+    try {
+      const res = await (this._client as any).im.messageResource.get({
+        path: { message_id: messageId, file_key: imageKey },
+        params: { type: 'image' },
+      })
+      return await toBuffer(res)
+    } catch (e) {
+      log.error(TAG, `Failed to download image ${imageKey} from ${messageId}: ${e}`)
+      throw e
+    }
+  }
+
+  /** Upload an image file and return the image_key */
+  async uploadImage(imagePath: string): Promise<string> {
+    try {
+      const buf = readFileSync(imagePath)
+      const res = await (this._client as any).im.image.create({
+        data: { image_type: 'message', image: buf },
+      })
+      const key = res?.image_key ?? res?.data?.image_key
+      if (!key) throw new Error('image upload returned no image_key')
+      log.info(TAG, `Uploaded image: ${imagePath} → ${key}`)
+      return key
+    } catch (e) {
+      log.error(TAG, `Failed to upload image ${imagePath}: ${e}`)
+      throw e
+    }
+  }
+
+  /** Send an image message to a chat */
+  async sendImage(chatId: string, imageKey: string, opts?: SendOpts): Promise<void> {
+    try {
+      const content = JSON.stringify({ image_key: imageKey })
+
+      if (opts?.replyToMessageId) {
+        await (this._client as any).im.message.reply({
+          path: { message_id: opts.replyToMessageId },
+          data: { msg_type: 'image', content },
+        })
+      } else {
+        await (this._client as any).im.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: { receive_id: chatId, msg_type: 'image', content },
+        })
+      }
+
+      log.info(TAG, `Sent image ${imageKey} to ${chatId}`)
+    } catch (e) {
+      log.error(TAG, `Failed to send image to ${chatId}: ${e}`)
+      throw e
+    }
+  }
+}
+
+// ── Buffer conversion helper ──
+
+async function toBuffer(response: unknown): Promise<Buffer> {
+  const r = response as any
+  if (Buffer.isBuffer(response)) return response
+  if (response instanceof ArrayBuffer) return Buffer.from(response)
+  if (Buffer.isBuffer(r?.data)) return r.data
+  if (r?.data instanceof ArrayBuffer) return Buffer.from(r.data)
+  if (typeof r?.getReadableStream === 'function') {
+    const chunks: Buffer[] = []
+    for await (const chunk of r.getReadableStream()) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as ArrayBuffer))
+    }
+    return Buffer.concat(chunks)
+  }
+  if (response instanceof Readable) {
+    const chunks: Buffer[] = []
+    for await (const chunk of response) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as ArrayBuffer))
+    }
+    return Buffer.concat(chunks)
+  }
+  throw new Error('Unsupported response format for media download')
 }

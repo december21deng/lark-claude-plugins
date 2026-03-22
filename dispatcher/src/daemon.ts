@@ -1,12 +1,17 @@
-import type { AppConfig, Gateway, ToolCallRequest } from './types.js'
+import { mkdirSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { homedir } from 'os'
+import type { AppConfig, Gateway, ToolCallRequest, ParsedMessage } from './types.js'
 import { LarkGateway } from './gateways/lark/ws.js'
 import { WorkerPool } from './pool.js'
 import { Router } from './router.js'
 import { log } from './utils/logger.js'
 
 const TAG = 'daemon'
+const INBOX_DIR = join(homedir(), '.lark-dispatcher', 'inbox')
 
 export async function startDaemon(config: AppConfig): Promise<void> {
+  mkdirSync(INBOX_DIR, { recursive: true })
   log.info(TAG, '============================================================')
   log.info(TAG, 'Lark Dispatcher starting')
 
@@ -57,8 +62,21 @@ export async function startDaemon(config: AppConfig): Promise<void> {
               const text = body.args.text as string
               const replyTo = body.args.reply_to as string | undefined
               const messageId = body.args.message_id as string | undefined
+              const files = (body.args.files as string[] | undefined) ?? []
+
               // Always reply to the original message so it stays in the thread
               await gw.sendMessage(chatId, text, { replyToMessageId: replyTo || messageId })
+
+              // Upload and send image files
+              for (const filePath of files) {
+                try {
+                  const imageKey = await gw.uploadImage(filePath)
+                  await gw.sendImage(chatId, imageKey)
+                  log.info(TAG, `Sent image ${filePath} to ${chatId}`)
+                } catch (e) {
+                  log.error(TAG, `Failed to send image ${filePath}: ${e}`)
+                }
+              }
 
               // Remove Typing indicator
               if (messageId && gw instanceof LarkGateway) {
@@ -66,7 +84,9 @@ export async function startDaemon(config: AppConfig): Promise<void> {
               }
               log.info(TAG, `Reply sent to ${chatId}, typing removed for ${messageId ?? 'unknown'}`)
 
-              resultText = 'Message sent successfully'
+              resultText = files.length
+                ? `Message sent successfully with ${files.length} image(s)`
+                : 'Message sent successfully'
               break
             }
 
@@ -127,6 +147,12 @@ export async function startDaemon(config: AppConfig): Promise<void> {
   for (const [name, gw] of gateways) {
     await gw.start(async (msg) => {
       log.info(TAG, `Incoming from ${name}: ${msg.messageId}`)
+
+      // Download image attachments before routing to worker
+      if (msg.attachments?.length) {
+        await downloadAttachments(gw, msg)
+      }
+
       // Route (async, don't await — let the gateway continue receiving)
       router.route(msg).catch(e => log.error(TAG, `Route error: ${e}`))
     })
@@ -149,4 +175,34 @@ export async function startDaemon(config: AppConfig): Promise<void> {
 
   process.on('SIGTERM', shutdown)
   process.on('SIGINT', shutdown)
+}
+
+// ── Image download helper ──
+
+async function downloadAttachments(gw: Gateway, msg: ParsedMessage): Promise<void> {
+  if (!msg.attachments?.length) return
+
+  const savedPaths: string[] = []
+  for (const att of msg.attachments) {
+    if (att.type === 'image' && att.imageKey) {
+      try {
+        const buf = await gw.downloadImage(msg.messageId, att.imageKey)
+        const ext = 'png'
+        const filename = `${Date.now()}-${msg.messageId.slice(-8)}-${att.imageKey.slice(-8)}.${ext}`
+        const localPath = join(INBOX_DIR, filename)
+        writeFileSync(localPath, buf)
+        att.localPath = localPath
+        savedPaths.push(localPath)
+        log.info(TAG, `Downloaded image ${att.imageKey} → ${localPath} (${(buf.length / 1024).toFixed(0)}KB)`)
+      } catch (e) {
+        log.error(TAG, `Failed to download image ${att.imageKey}: ${e}`)
+      }
+    }
+  }
+
+  // Append download info to message text so Claude knows where the images are
+  if (savedPaths.length) {
+    const pathList = savedPaths.map(p => `  ${p}`).join('\n')
+    msg.text += `\n\n[用户发送了${savedPaths.length}张图片，已保存到以下路径，请用 Read 工具查看：\n${pathList}]`
+  }
 }
