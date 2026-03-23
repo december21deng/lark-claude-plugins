@@ -243,4 +243,69 @@ describe('AdminManager', () => {
     const addResult = mgr.execute({ action: 'add_admin', target_id: 'ou_hacker' }, 'ou_admin')
     expect(addResult.ok).toBe(false)
   })
+
+  // ── DM-only enforcement ──
+
+  test('rejects add_admin in group chat', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    const result = mgr.execute({ action: 'add_admin', target_id: 'ou_tom' }, 'ou_super', 'group')
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('私聊')
+  })
+
+  test('rejects remove_admin in group chat', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    mgr.execute({ action: 'add_admin', target_id: 'ou_tom' }, 'ou_super', 'private')
+    const result = mgr.execute({ action: 'remove_admin', target_id: 'ou_tom' }, 'ou_super', 'group')
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('私聊')
+    expect(mgr.isAdmin('ou_tom')).toBe(true)
+  })
+
+  test('rejects add_group in group chat', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    const result = mgr.execute({ action: 'add_group', target_id: 'oc_g1' }, 'ou_super', 'group')
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('私聊')
+  })
+
+  test('rejects remove_group in group chat', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    mgr.execute({ action: 'add_group', target_id: 'oc_g1' }, 'ou_super', 'private')
+    const result = mgr.execute({ action: 'remove_group', target_id: 'oc_g1' }, 'ou_super', 'group')
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('私聊')
+  })
+
+  test('rejects list_admins in group chat', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    const result = mgr.execute({ action: 'list_admins' }, 'ou_super', 'group')
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('私聊')
+  })
+
+  test('rejects list_groups in group chat', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    const result = mgr.execute({ action: 'list_groups' }, 'ou_super', 'group')
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('私聊')
+  })
+
+  test('allows all actions in private chat (default)', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    const r1 = mgr.execute({ action: 'add_admin', target_id: 'ou_tom' }, 'ou_super')
+    expect(r1.ok).toBe(true)
+    const r2 = mgr.execute({ action: 'add_group', target_id: 'oc_g1' }, 'ou_super')
+    expect(r2.ok).toBe(true)
+    const r3 = mgr.execute({ action: 'list_admins' }, 'ou_super')
+    expect(r3.ok).toBe(true)
+  })
+
+  test('allows all actions with explicit private chatType', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    const r1 = mgr.execute({ action: 'add_admin', target_id: 'ou_tom' }, 'ou_super', 'private')
+    expect(r1.ok).toBe(true)
+    const r2 = mgr.execute({ action: 'add_group', target_id: 'oc_g1' }, 'ou_super', 'private')
+    expect(r2.ok).toBe(true)
+  })
 })

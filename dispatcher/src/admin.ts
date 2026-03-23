@@ -51,11 +51,19 @@ export class AdminManager {
     log.info(TAG, `Initialized: ${this._superadmins.length} superadmins, ${this._admins.length} admins, ${Object.keys(this._groups).length} groups`)
   }
 
-  /** Execute a manage_access action. Returns { ok, message }. */
+  /** Execute a manage_access action. Returns { ok, message }.
+   *  chatType must be 'private' — all manage_access operations are DM-only. */
   execute(
     args: ManageAccessArgs,
     senderId: string,
+    chatType: 'private' | 'group' = 'private',
   ): { ok: boolean; message: string } {
+    // Hard gate: manage_access is DM-only
+    if (chatType !== 'private') {
+      log.info(TAG, `manage_access rejected: chatType=${chatType} (DM-only)`)
+      return { ok: false, message: '权限管理操作只能在私聊中进行，请私聊我来管理群权限和管理员。' }
+    }
+
     const { action, target_id, options } = args
 
     switch (action) {

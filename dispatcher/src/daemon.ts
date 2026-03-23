@@ -184,16 +184,10 @@ export async function startDaemon(config: AppConfig): Promise<void> {
                 break
               }
 
-              // Only allowed in DM — reject group messages
-              if (sender.chatType !== 'private') {
-                resultText = '权限管理操作只能在私聊中进行，请私聊我来管理群权限和管理员。'
-                log.info(TAG, `manage_access rejected: not DM (chatType=${sender.chatType})`)
-                break
-              }
+              log.info(TAG, `manage_access: action=${manageArgs.action} sender=${sender.senderId} chatType=${sender.chatType}`)
 
-              log.info(TAG, `manage_access: action=${manageArgs.action} sender=${sender.senderId}`)
-
-              const result = adminManager.execute(manageArgs, sender.senderId)
+              // DM-only check is now inside AdminManager.execute()
+              const result = adminManager.execute(manageArgs, sender.senderId, sender.chatType)
               resultText = result.message
 
               // If adding a group, try to auto-detect chat mode via API
