@@ -1,6 +1,6 @@
 # Test Coverage — Feature & Test Case Matrix
 
-154 tests across 11 files. All passing.
+167 tests across 12 files. All passing.
 
 ```bash
 cd dispatcher && bun test
@@ -130,12 +130,22 @@ cd dispatcher && bun test
 | Groups persist to file | `groups persist to file` | ✅ |
 | Reload from files | `reload from persisted files` | ✅ |
 
-### 3.4 Edge Cases
+### 3.4 Chat Mode Auto-Detect
+
+| Feature | Test Case | Status |
+|---------|-----------|--------|
+| Topic mode → auto-reply | `updateGroupChatMode changes topic group to auto-reply` | ✅ |
+| Unknown group no-op | `updateGroupChatMode on unknown group is no-op` | ✅ |
+
+### 3.5 Edge Cases
 
 | Feature | Test Case | Status |
 |---------|-----------|--------|
 | Unknown action | `unknown action returns error` | ✅ |
 | Missing target_id | `missing target_id returns error` | ✅ |
+| Duplicate group overwrites | `duplicate group add overwrites config` | ✅ |
+| Superadmin not removable | `superadmin cannot be removed via remove_admin` | ✅ |
+| Admin permission boundary | `admin can list groups but cannot add admin` | ✅ |
 
 ---
 
@@ -307,19 +317,35 @@ cd dispatcher && bun test
 
 ---
 
+## 8. System Prompt Safety Rules (`system-prompt.test.ts`)
+
+| Feature | Test Case | Status |
+|---------|-----------|--------|
+| Unattended warning | `contains unattended worker warning` | ✅ |
+| Block interactive ops | `blocks interactive operations` | ✅ |
+| Override access skill | `overrides lark-customized:access skill for manage_access` | ✅ |
+| DM-only enforcement | `enforces DM-only for manage_access` | ✅ |
+| Chrome MCP required | `requires Chrome MCP, blocks headless` | ✅ |
+| Block manual emoji | `blocks manual status emoji reactions` | ✅ |
+| Skill priority | `prioritizes skills` | ✅ |
+| Doc lookup required | `requires doc lookup before claiming unsupported` | ✅ |
+
+---
+
 ## Summary
 
 | Module | Tests | File |
 |--------|-------|------|
 | Message parsing + mentions | 27 | `receiver.test.ts` |
 | Gate (access control) | 16 | `gate.test.ts` |
-| Admin management | 19 | `admin.test.ts` |
+| Admin management | 24 | `admin.test.ts` |
 | Emoji type resolution | 17 | `emoji-resolve.test.ts` |
 | Reaction tracker | 10 | `reaction-tracker.test.ts` |
 | Reply threading + batch + DM-only | 16 | `reply-threading.test.ts` |
 | Card detection + extraction | 18 | `card-detection.test.ts` |
+| System prompt rules | 8 | `system-prompt.test.ts` |
 | Mutex | 4 | `mutex.test.ts` |
 | Dedup | 5 | `dedup.test.ts` |
 | Router | 16 | `router.test.ts` |
 | Session store | 6 | `session-store.test.ts` |
-| **Total** | **154** | **11 files** |
+| **Total** | **167** | **12 files** |

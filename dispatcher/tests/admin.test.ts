@@ -192,4 +192,55 @@ describe('AdminManager', () => {
     expect(result.ok).toBe(true)
     expect(result.message).toContain('已经是')
   })
+
+  // ── Chat mode auto-detect ──
+
+  test('updateGroupChatMode changes topic group to auto-reply', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    mgr.execute({ action: 'add_group', target_id: 'oc_topic1' }, 'ou_super')
+    // Default is group mode with requireMention=true
+    const before = mgr.getLiveAccessConfig(makeLarkConfig(['ou_super']).access)
+    expect(before.groups['oc_topic1']?.requireMention).toBe(true)
+
+    // Auto-detect updates to topic mode → requireMention=false
+    mgr.updateGroupChatMode('oc_topic1', 'topic')
+    const after = mgr.getLiveAccessConfig(makeLarkConfig(['ou_super']).access)
+    expect(after.groups['oc_topic1']?.requireMention).toBe(false)
+    expect(after.groupAutoReply).toContain('oc_topic1')
+  })
+
+  test('updateGroupChatMode on unknown group is no-op', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    // Should not throw
+    mgr.updateGroupChatMode('oc_unknown', 'topic')
+    const config = mgr.getLiveAccessConfig(makeLarkConfig(['ou_super']).access)
+    expect(config.groups['oc_unknown']).toBeUndefined()
+  })
+
+  test('duplicate group add overwrites config', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    mgr.execute({ action: 'add_group', target_id: 'oc_g1', options: { require_mention: true } }, 'ou_super')
+    mgr.execute({ action: 'add_group', target_id: 'oc_g1', options: { auto_reply: true } }, 'ou_super')
+    const config = mgr.getLiveAccessConfig(makeLarkConfig(['ou_super']).access)
+    expect(config.groups['oc_g1']?.requireMention).toBe(false) // overwritten to auto_reply
+  })
+
+  test('superadmin cannot be removed via remove_admin', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    const result = mgr.execute({ action: 'remove_admin', target_id: 'ou_super' }, 'ou_super')
+    expect(result.ok).toBe(false) // superadmin is not in _admins list
+  })
+
+  test('admin can list groups but cannot add admin', () => {
+    mgr = new AdminManager(makeLarkConfig(['ou_super']), TEST_DIR)
+    mgr.execute({ action: 'add_admin', target_id: 'ou_admin' }, 'ou_super')
+
+    // Admin can list
+    const listResult = mgr.execute({ action: 'list_groups' }, 'ou_admin')
+    expect(listResult.ok).toBe(true)
+
+    // Admin cannot add admin
+    const addResult = mgr.execute({ action: 'add_admin', target_id: 'ou_hacker' }, 'ou_admin')
+    expect(addResult.ok).toBe(false)
+  })
 })
