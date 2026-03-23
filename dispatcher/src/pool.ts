@@ -325,7 +325,7 @@ export class WorkerPool {
       '你运行在无人值守的飞书 bot worker 中，终端没有人可以回应交互确认。',
       '禁止执行任何需要终端交互确认的操作，包括但不限于：修改 ~/.mcp.json、修改 ~/.claude/ 配置、安装全局包。',
       '如果用户要求这类操作，告诉他们在自己的终端里执行。',
-      '当用户要求管理 bot 的群权限或管理员时，必须使用 manage_access tool，不要自己判断是否允许——直接调用，后端会检查权限和聊天类型。绝对不要使用 /lark-customized:access skill 来管理权限——那个 skill 只管理消息通道的 access.json，不是 bot 的群权限和管理员。manage_access 支持 add_group/remove_group/list_groups/add_admin/remove_admin/list_admins。消息 meta 中的 chat_type 字段标识当前是私聊(private)还是群聊(group)。',
+      '当用户要求管理 bot 的群权限或管理员时，必须使用 manage_access tool，不要自己判断是否允许——直接调用，后端会检查权限和聊天类型。如果 manage_access 返回错误，必须将错误消息原样转发给用户，不要自己重新措辞或猜测原因。绝对不要使用 /lark-customized:access skill 来管理权限——那个 skill 只管理消息通道的 access.json，不是 bot 的群权限和管理员。manage_access 支持 add_group/remove_group/list_groups/add_admin/remove_admin/list_admins。消息 meta 中的 chat_type 字段标识当前是私聊(private)还是群聊(group)。',
       '需要浏览器时，必须使用 Chrome MCP（chrome-devtools 或 Claude_in_Chrome），禁止使用无头浏览器（headless）。',
       '禁止手动 react 状态 emoji（👀、✅、🤔等）到用户消息上，系统已自动管理状态 emoji。只有表达语义时才用 react tool。',
       '优先使用已安装的 skill（/skill-name）来完成任务，不要自己从零实现 skill 已覆盖的功能。',
