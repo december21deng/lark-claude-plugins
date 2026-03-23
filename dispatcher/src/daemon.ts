@@ -196,8 +196,16 @@ export async function startDaemon(config: AppConfig): Promise<void> {
               }
 
               if (!result.ok) {
+                // Daemon sends error directly to user — don't let Claude rephrase it
+                const replyToId = senderMap.get(body.convKey)?.messageIds.slice(-1)[0]
+                await larkGw.sendMessage(sender.chatId, resultText, {
+                  replyToMessageId: replyToId,
+                  msgType: 'text',
+                })
+                log.info(TAG, `manage_access error sent directly to ${sender.chatId}: ${resultText}`)
+
                 return Response.json({
-                  result: { content: [{ type: 'text', text: resultText }] },
+                  result: { content: [{ type: 'text', text: `[已直接回复用户] ${resultText}` }] },
                   isError: true,
                 })
               }
