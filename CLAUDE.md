@@ -67,6 +67,15 @@ dispatcher/           — Daemon with worker pool management
 ## Testing
 
 After code changes:
-1. Sync plugin: `cp plugin-dispatcher/server.ts ~/.claude/plugins/cache/local-channels/lark-customized/0.0.1/server.ts`
-2. Restart daemon: `cd dispatcher && bun run src/index.ts start`
-3. Send test message in Lark
+1. Sync plugin: `cp plugin-dispatcher/server.ts ~/.claude/plugins/marketplaces/local-channels/external_plugins/lark-customized/server.ts`
+2. Run tests: `cd dispatcher && bun test`
+3. Restart daemon: `cd dispatcher && bun run src/index.ts start`
+4. Send test message in Lark
+
+### Test Requirements
+
+Every code change MUST:
+1. **Add or update test cases** for all new/modified functionality
+2. **Update `TEST_COVERAGE.md`** with new test entries in the feature → test case matrix
+3. **All tests must pass** before committing (`bun test` — 0 failures)
+4. Test files go in `dispatcher/tests/`, named `<module>.test.ts`
