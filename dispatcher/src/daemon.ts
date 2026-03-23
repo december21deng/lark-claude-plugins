@@ -5,7 +5,7 @@ import type { AppConfig, Gateway, ToolCallRequest, ParsedMessage } from './types
 import { LarkGateway } from './gateways/lark/ws.js'
 import { WorkerPool } from './pool.js'
 import { Router } from './router.js'
-import { StreamingCardManager } from './streaming-card.js'
+import { AdminManager, type ManageAccessArgs } from './admin.js'
 import {
   buildPermissionCard,
   createPermissionRequest,
@@ -16,7 +16,8 @@ import {
 import { log } from './utils/logger.js'
 
 const TAG = 'daemon'
-const INBOX_DIR = join(homedir(), '.lark-dispatcher', 'inbox')
+const DATA_DIR = join(homedir(), '.lark-dispatcher')
+const INBOX_DIR = join(DATA_DIR, 'inbox')
 
 export async function startDaemon(config: AppConfig): Promise<void> {
   mkdirSync(INBOX_DIR, { recursive: true })
@@ -32,11 +33,15 @@ export async function startDaemon(config: AppConfig): Promise<void> {
   const pool = new WorkerPool(config.pool, config.claude)
   await pool.init()
 
+  // ── Admin manager ──
+  const adminManager = new AdminManager(config.lark, DATA_DIR)
+  larkGw.setLiveAccessConfig(() => adminManager.getLiveAccessConfig(config.lark.access))
+
+  // ── Sender tracking (convKey → sender info + pending message IDs for emoji batch) ──
+  const senderMap = new Map<string, { senderId: string; chatId: string; messageIds: string[] }>()
+
   // ── Init router ──
   const router = new Router(pool, gateways)
-
-  // ── Init streaming card manager (uses LarkApi directly) ──
-  const streamingCards = new StreamingCardManager(larkGw.api)
 
   // ── Start daemon HTTP server (receives tool-call from plugins) ──
   const httpServer = Bun.serve({
@@ -52,8 +57,9 @@ export async function startDaemon(config: AppConfig): Promise<void> {
 
       // ── Plugin → daemon: execute IM API call ──
       if (url.pathname === '/tool-call' && req.method === 'POST') {
+        let body: ToolCallRequest | undefined
         try {
-          const body = await req.json() as ToolCallRequest
+          body = await req.json() as ToolCallRequest
           const gw = gateways.get(body.platform)
 
           if (!gw) {
@@ -76,47 +82,37 @@ export async function startDaemon(config: AppConfig): Promise<void> {
               const files = (body.args.files as string[] | undefined) ?? []
               const msgType = (body.args.msg_type as string | undefined) as import('./types.js').MsgType | undefined
 
-              // Check if text is card JSON (should be sent as separate interactive message)
-              let isCardJson = false
-              if (text.trimStart().startsWith('{')) {
+              // Always reply to original message to stay in the same thread.
+              // Fallback: if Claude didn't pass reply_to, use the latest messageId from senderMap.
+              const senderEntry = senderMap.get(body.convKey)
+              const latestMsgId = senderEntry?.messageIds[senderEntry.messageIds.length - 1]
+              const replyToId = replyTo || messageId || latestMsgId
+              if (!replyToId) {
+                log.warn(TAG, `No reply_to for ${body.convKey}, will create new message (may break thread)`)
+              }
+
+              // Send message (api.ts handles card JSON auto-detect + fallback)
+              await gw.sendMessage(chatId, text, { replyToMessageId: replyToId, msgType })
+
+              // Upload and send image files
+              for (const filePath of files) {
                 try {
-                  const parsed = JSON.parse(text)
-                  if (parsed.schema || parsed.config || parsed.header || parsed.elements) {
-                    isCardJson = true
-                  }
-                } catch {}
-              }
-
-              // If text is card JSON, close streaming card (if any) and send as new message
-              if (isCardJson) {
-                if (streamingCards.has(body.convKey)) {
-                  await streamingCards.done(body.convKey) // finalize without text
-                }
-                await gw.sendMessage(chatId, text, { replyToMessageId: replyTo || messageId, msgType })
-              } else if (streamingCards.has(body.convKey)) {
-                // Active streaming card — finalize with reply text
-                await streamingCards.done(body.convKey, text)
-              } else {
-                // No streaming card — send as regular message
-                await gw.sendMessage(chatId, text, { replyToMessageId: replyTo || messageId, msgType })
-
-                // Upload and send image files
-                for (const filePath of files) {
-                  try {
-                    const imageKey = await gw.uploadImage(filePath)
-                    await gw.sendImage(chatId, imageKey)
-                    log.info(TAG, `Sent image ${filePath} to ${chatId}`)
-                  } catch (e) {
-                    log.error(TAG, `Failed to send image ${filePath}: ${e}`)
-                  }
+                  const imageKey = await gw.uploadImage(filePath)
+                  await gw.sendImage(chatId, imageKey)
+                  log.info(TAG, `Sent image ${filePath} to ${chatId}`)
+                } catch (e) {
+                  log.error(TAG, `Failed to send image ${filePath}: ${e}`)
                 }
               }
 
-              // Remove Typing indicator
-              if (messageId && gw instanceof LarkGateway) {
-                await (gw as LarkGateway).ackDone(messageId)
+              // Emoji state: DONE for ALL pending messages in this convKey
+              if (senderEntry && gw instanceof LarkGateway) {
+                for (const msgId of senderEntry.messageIds) {
+                  await (gw as LarkGateway).tracker.transition(msgId, chatId, 'DONE').catch(() => {})
+                }
+                senderEntry.messageIds = [] // clear for next batch
               }
-              log.info(TAG, `Reply sent to ${chatId}, typing removed for ${messageId ?? 'unknown'}`)
+              log.info(TAG, `Reply sent to ${chatId}`)
 
               resultText = files.length
                 ? `Message sent successfully with ${files.length} image(s)`
@@ -179,13 +175,33 @@ export async function startDaemon(config: AppConfig): Promise<void> {
               break
             }
 
+            case 'manage_access': {
+              const manageArgs = body.args as unknown as ManageAccessArgs
+              const sender = senderMap.get(body.convKey)
+
+              if (!sender) {
+                resultText = 'Error: 无法确定操作者身份（未找到 sender 信息）'
+                break
+              }
+
+              // Only allowed in DM
+              // convKey format: "lark:<chatId>" or "lark:<chatId>_thread_<threadId>"
+              // DM chatIds start with different patterns, but we track chatType via the message
+              log.info(TAG, `manage_access: action=${manageArgs.action} sender=${sender.senderId}`)
+
+              const result = adminManager.execute(manageArgs, sender.senderId)
+              resultText = result.message
+
+              // If adding a group, try to auto-detect chat mode via API
+              if (result.ok && manageArgs.action === 'add_group' && manageArgs.target_id) {
+                autoDetectChatMode(larkGw.api, adminManager, manageArgs.target_id)
+              }
+
+              break
+            }
+
             default:
               resultText = `Unknown tool: ${body.tool}`
-          }
-
-          // If plugin reports a sessionId, update the store
-          if (body.args._sessionId) {
-            pool.updateSessionId(body.convKey, body.args._sessionId as string)
           }
 
           return Response.json({
@@ -193,61 +209,21 @@ export async function startDaemon(config: AppConfig): Promise<void> {
           })
         } catch (e) {
           log.error(TAG, `tool-call error: ${e}`)
+          // Emoji state: FACEPALM on ALL pending messages
+          if (body?.convKey) {
+            const info = senderMap.get(body.convKey)
+            const errorGw = gateways.get(body.platform)
+            if (info && errorGw && 'tracker' in errorGw) {
+              for (const msgId of info.messageIds) {
+                await (errorGw as LarkGateway).tracker.transition(msgId, info.chatId, 'FACEPALM').catch(() => {})
+              }
+              info.messageIds = []
+            }
+          }
           return Response.json({
             result: { content: [{ type: 'text', text: `Error: ${e}` }] },
             isError: true,
           })
-        }
-      }
-
-      // ── v2: Plugin → daemon: stream events for streaming cards ──
-      if (url.pathname === '/stream-event' && req.method === 'POST') {
-        try {
-          const body = await req.json() as {
-            type: 'start' | 'tool_use' | 'text_delta' | 'done'
-            convKey: string
-            chatId?: string
-            replyToMessageId?: string
-            toolName?: string
-            toolInput?: unknown
-            text?: string
-          }
-
-          log.info(TAG, `stream-event: type=${body.type} convKey=${body.convKey}`)
-
-          switch (body.type) {
-            case 'start': {
-              if (!body.chatId) {
-                return Response.json({ error: 'chatId required for start' }, { status: 400 })
-              }
-              await streamingCards.start(body.convKey, body.chatId, body.replyToMessageId)
-              break
-            }
-
-            case 'tool_use': {
-              if (body.toolName) {
-                await streamingCards.addToolStep(body.convKey, body.toolName, body.toolInput)
-              }
-              break
-            }
-
-            case 'text_delta': {
-              if (body.text !== undefined) {
-                await streamingCards.updateText(body.convKey, body.text)
-              }
-              break
-            }
-
-            case 'done': {
-              await streamingCards.done(body.convKey, body.text)
-              break
-            }
-          }
-
-          return Response.json({ ok: true })
-        } catch (e) {
-          log.error(TAG, `stream-event error: ${e}`)
-          return Response.json({ error: String(e) }, { status: 500 })
         }
       }
 
@@ -274,6 +250,14 @@ export async function startDaemon(config: AppConfig): Promise<void> {
         await downloadAttachments(gw, msg)
       }
 
+      // Track sender + pending messageIds for emoji batch processing
+      const existing = senderMap.get(convKey)
+      if (existing) {
+        existing.messageIds.push(msg.messageId)
+      } else {
+        senderMap.set(convKey, { senderId: msg.senderId, chatId: msg.chatId, messageIds: [msg.messageId] })
+      }
+
       // Route (async, don't await — let the gateway continue receiving)
       router.route(msg).catch(e => log.error(TAG, `Route error: ${e}`))
     })
@@ -296,6 +280,26 @@ export async function startDaemon(config: AppConfig): Promise<void> {
 
   process.on('SIGTERM', shutdown)
   process.on('SIGINT', shutdown)
+}
+
+// ── Auto-detect group chat mode ──
+
+async function autoDetectChatMode(
+  api: import('./gateways/lark/api.js').LarkApi,
+  adminManager: AdminManager,
+  chatId: string,
+): Promise<void> {
+  try {
+    const res = await (api.client as any).im.chat.get({
+      path: { chat_id: chatId },
+    })
+    const chatMode = res?.data?.chat_mode ?? 'group'
+    const mode: 'group' | 'topic' = chatMode === 'topic' ? 'topic' : 'group'
+    adminManager.updateGroupChatMode(chatId, mode)
+    log.info(TAG, `Auto-detected chat mode for ${chatId}: ${mode}`)
+  } catch (e) {
+    log.warn(TAG, `Failed to auto-detect chat mode for ${chatId}: ${e}`)
+  }
 }
 
 // ── Image download helper ──

@@ -1,4 +1,5 @@
 import { execSync, spawnSync } from 'child_process'
+import { randomUUID } from 'crypto'
 import { homedir } from 'os'
 import type { Worker, PoolConfig, ClaudeConfig } from './types.js'
 import { SessionStore } from './session-store.js'
@@ -74,15 +75,15 @@ export class WorkerPool {
     this._startingInBackground = false
   }
 
-  /** Start a worker with retries. Returns true if successful. */
-  private async _startWorkerWithRetry(idx: number, sessionId?: string | null): Promise<boolean> {
+  /** Start a worker with retries. */
+  private async _startWorkerWithRetry(idx: number, opts?: { resumeSessionId?: string; newSessionId?: string }): Promise<boolean> {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       log.info(TAG, `Starting worker[${idx}] (attempt ${attempt}/${MAX_RETRIES})`)
 
       this._killTmux(idx)
       await this._sleep(500)
 
-      const ok = await this._startWorker(idx, sessionId)
+      const ok = await this._startWorker(idx, opts)
       if (ok) return true
 
       // Diagnose failure
@@ -99,9 +100,9 @@ export class WorkerPool {
   }
 
   /** Start a single worker. Returns true if healthy within timeout. */
-  private async _startWorker(idx: number, sessionId?: string | null): Promise<boolean> {
+  private async _startWorker(idx: number, opts?: { resumeSessionId?: string; newSessionId?: string }): Promise<boolean> {
     const name = this._tmuxName(idx)
-    const cmd = this._buildClaudeCmd(idx, sessionId)
+    const cmd = this._buildClaudeCmd(idx, opts)
 
     // Create tmux session
     spawnSync('tmux', [
@@ -168,46 +169,36 @@ export class WorkerPool {
       const w = this._workers[existingIdx]
       if (w.ready && await this._isHealthy(existingIdx)) {
         this._lastUsed.set(convKey, Date.now())
-        log.info(TAG, `Reusing worker[${existingIdx}] for ${convKey}`)
+        log.info(TAG, `Reusing worker[${existingIdx}] for ${convKey} (session=${w.sessionId})`)
         return w
       }
+      // Not healthy — restart with resume
       log.warn(TAG, `Worker[${existingIdx}] not healthy, restarting for ${convKey}`)
       this._assignments.delete(convKey)
-      await this._startWorkerWithRetry(existingIdx, this._sessions.get(convKey))
-      const w2 = this._workers[existingIdx]
-      w2.convKey = convKey
-      this._assignments.set(convKey, existingIdx)
-      this._lastUsed.set(convKey, Date.now())
-      return w2
+      const savedSession = w.sessionId ?? this._sessions.get(convKey)
+      await this._assignAndStart(existingIdx, convKey, savedSession)
+      return this._workers[existingIdx]
     }
 
-    // 2. Find idle ready worker
+    // 2. Find idle ready worker → restart with session for this convKey
     for (let i = 0; i < this._workers.length; i++) {
       const w = this._workers[i]
       if (w.convKey !== null) continue
       if (!w.ready || !await this._isHealthy(i)) continue
-      // Healthy and idle — assign
-      w.convKey = convKey
-      w.startedAt = Date.now()
-      this._assignments.set(convKey, i)
-      this._lastUsed.set(convKey, Date.now())
-      log.info(TAG, `Assigned idle worker[${i}] :${w.port} to ${convKey}`)
-      return w
+      const savedSession = this._sessions.get(convKey)
+      await this._assignAndStart(i, convKey, savedSession)
+      log.info(TAG, `Assigned worker[${i}] :${this._workers[i].port} to ${convKey} (session=${this._workers[i].sessionId})`)
+      return this._workers[i]
     }
 
     // 3. Find idle NOT ready worker → start it
     for (let i = 0; i < this._workers.length; i++) {
       const w = this._workers[i]
       if (w.convKey !== null) continue
-      // Not ready, try to start it now
       log.info(TAG, `Worker[${i}] not ready, starting on demand for ${convKey}`)
-      const sessionId = this._sessions.get(convKey) ?? null
-      await this._startWorkerWithRetry(i, sessionId)
-      w.convKey = convKey
-      w.sessionId = sessionId
-      this._assignments.set(convKey, i)
-      this._lastUsed.set(convKey, Date.now())
-      return w
+      const savedSession = this._sessions.get(convKey)
+      await this._assignAndStart(i, convKey, savedSession)
+      return this._workers[i]
     }
 
     // 4. Pool full → evict oldest, restart with new session
@@ -216,23 +207,48 @@ export class WorkerPool {
       const victimIdx = this._assignments.get(victimKey)!
       log.info(TAG, `Evicting worker[${victimIdx}] (${victimKey}) for ${convKey}`)
 
+      // Save victim's session before evicting
       const victimWorker = this._workers[victimIdx]
       if (victimWorker.sessionId) {
         this._sessions.set(victimKey, victimWorker.sessionId)
       }
       this._assignments.delete(victimKey)
 
-      const sessionId = this._sessions.get(convKey) ?? null
-      await this._startWorkerWithRetry(victimIdx, sessionId)
-      const w = this._workers[victimIdx]
-      w.convKey = convKey
-      w.sessionId = sessionId
-      this._assignments.set(convKey, victimIdx)
-      this._lastUsed.set(convKey, Date.now())
-      return w
+      const savedSession = this._sessions.get(convKey)
+      await this._assignAndStart(victimIdx, convKey, savedSession)
+      return this._workers[victimIdx]
     }
 
     throw new Error('No workers available')
+  }
+
+  /** Restart a worker with session management and assign to convKey. */
+  private async _assignAndStart(idx: number, convKey: string, savedSessionId?: string): Promise<void> {
+    let opts: { resumeSessionId?: string; newSessionId?: string }
+
+    if (savedSessionId) {
+      // Resume existing session
+      opts = { resumeSessionId: savedSessionId }
+      log.info(TAG, `Worker[${idx}]: resuming session ${savedSessionId} for ${convKey}`)
+    } else {
+      // New conversation — generate UUID so we can track it
+      const newId = randomUUID()
+      opts = { newSessionId: newId }
+      log.info(TAG, `Worker[${idx}]: new session ${newId} for ${convKey}`)
+    }
+
+    await this._startWorkerWithRetry(idx, opts)
+
+    const w = this._workers[idx]
+    w.convKey = convKey
+    w.sessionId = savedSessionId ?? opts.newSessionId ?? null
+    this._assignments.set(convKey, idx)
+    this._lastUsed.set(convKey, Date.now())
+
+    // Persist session immediately
+    if (w.sessionId) {
+      this._sessions.set(convKey, w.sessionId)
+    }
   }
 
   /** Terminate a specific conversation's worker and delete its session. */
@@ -241,6 +257,7 @@ export class WorkerPool {
     if (idx !== undefined) {
       this._assignments.delete(convKey)
       this._workers[idx].convKey = null
+      this._workers[idx].sessionId = null
       this._workers[idx].ready = false
       await this._startWorkerWithRetry(idx)
     }
@@ -261,15 +278,6 @@ export class WorkerPool {
     }
     this._sessions.flushSync()
     log.info(TAG, 'Pool shut down')
-  }
-
-  /** Update sessionId for a convKey. */
-  updateSessionId(convKey: string, sessionId: string): void {
-    this._sessions.set(convKey, sessionId)
-    const idx = this._assignments.get(convKey)
-    if (idx !== undefined) {
-      this._workers[idx].sessionId = sessionId
-    }
   }
 
   /** Get pool status. */
@@ -298,14 +306,41 @@ export class WorkerPool {
     return `${TMUX_PREFIX}-${idx}`
   }
 
-  private _buildClaudeCmd(idx: number, sessionId?: string | null): string {
+  /**
+   * Build Claude CLI command.
+   * - resumeSessionId: existing session to resume (--resume)
+   * - newSessionId: fresh session with known UUID (--session-id)
+   * - neither: bare start (idle worker, no session yet)
+   */
+  private _buildClaudeCmd(idx: number, opts?: { resumeSessionId?: string; newSessionId?: string }): string {
     const port = this._poolConfig.basePort + idx
     const args = [
       this._claudeConfig.bin,
       '--dangerously-load-development-channels', this._claudeConfig.pluginChannel,
       '--dangerously-skip-permissions',
     ]
-    if (sessionId) args.push('--resume', sessionId)
+
+    // System prompt: safety rules for unattended workers + user-defined prompt
+    const safetyRules = [
+      '你运行在无人值守的飞书 bot worker 中，终端没有人可以回应交互确认。',
+      '禁止执行任何需要终端交互确认的操作，包括但不限于：修改 ~/.mcp.json、修改 ~/.claude/ 配置、安装全局包。',
+      '如果用户要求这类操作，告诉他们在自己的终端里执行。',
+      '当用户要求管理 bot 的群权限或管理员时，使用 manage_access tool。',
+      '需要浏览器时，必须使用 Chrome MCP（chrome-devtools 或 Claude_in_Chrome），禁止使用无头浏览器（headless）。',
+      '禁止手动 react 状态 emoji（👀、✅、🤔等）到用户消息上，系统已自动管理状态 emoji。只有表达语义时才用 react tool。',
+      '优先使用已安装的 skill（/skill-name）来完成任务，不要自己从零实现 skill 已覆盖的功能。',
+      '不确定飞书 API 是否支持某功能时，先用 Context7 查文档或使用相关 skill，禁止凭猜测回答"不支持"或"做不到"。',
+    ].join(' ')
+    const parts = [safetyRules]
+    if (this._claudeConfig.systemPrompt) parts.push(this._claudeConfig.systemPrompt)
+    args.push('--append-system-prompt', JSON.stringify(parts.join('\n')))
+
+    if (opts?.resumeSessionId) {
+      args.push('--resume', opts.resumeSessionId)
+    } else if (opts?.newSessionId) {
+      args.push('--session-id', opts.newSessionId)
+    }
+
     // Use export so env vars are inherited by Claude's child processes (plugin)
     return `export LARK_DISPATCHER_PORT=${port} && export LARK_DAEMON_PORT=${this._poolConfig.daemonApiPort} && ${args.join(' ')}`
   }

@@ -21,6 +21,7 @@ export function loadConfig(): AppConfig {
       appId: parsed.lark.appId,
       appSecret: parsed.lark.appSecret,
       domain: parsed.lark.domain ?? 'feishu',
+      superadmins: parsed.lark.superadmins ?? [],
       access: {
         dmPolicy: parsed.lark.access?.dmPolicy ?? 'pairing',
         allowFrom: parsed.lark.access?.allowFrom ?? [],

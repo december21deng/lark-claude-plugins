@@ -229,6 +229,62 @@ describe('bot mention detection', () => {
   })
 })
 
+// ── Mention placeholder replacement (same logic as receiver.ts) ──
+
+function replaceMentionPlaceholders(text: string, mentions?: any[]): string {
+  if (!mentions?.length || !text) return text
+  let result = text
+  for (const m of mentions) {
+    const key = m.key as string | undefined
+    const name = m.name as string | undefined
+    const openId = m.id?.open_id as string | undefined
+    if (!key) continue
+    const replacement = name
+      ? (openId ? `@${name}(${openId})` : `@${name}`)
+      : (openId ?? key)
+    result = result.replace(key, replacement)
+  }
+  return result
+}
+
+describe('mention placeholder replacement', () => {
+  test('replaces @_user_1 with name and open_id', () => {
+    const text = '你可以@_user_1 ，给她说hi吗'
+    const mentions = [{ key: '@_user_1', id: { open_id: 'ou_xxx' }, name: '温昕昕' }]
+    expect(replaceMentionPlaceholders(text, mentions)).toBe('你可以@温昕昕(ou_xxx) ，给她说hi吗')
+  })
+
+  test('replaces multiple mentions', () => {
+    const text = '@_user_1 和 @_user_2 你们好'
+    const mentions = [
+      { key: '@_user_1', id: { open_id: 'ou_aaa' }, name: 'Alice' },
+      { key: '@_user_2', id: { open_id: 'ou_bbb' }, name: 'Bob' },
+    ]
+    expect(replaceMentionPlaceholders(text, mentions)).toBe('@Alice(ou_aaa) 和 @Bob(ou_bbb) 你们好')
+  })
+
+  test('no mentions returns text unchanged', () => {
+    expect(replaceMentionPlaceholders('hello', [])).toBe('hello')
+    expect(replaceMentionPlaceholders('hello', undefined)).toBe('hello')
+  })
+
+  test('mention without name uses open_id', () => {
+    const text = '给 @_user_1 发消息'
+    const mentions = [{ key: '@_user_1', id: { open_id: 'ou_xxx' } }]
+    expect(replaceMentionPlaceholders(text, mentions)).toBe('给 ou_xxx 发消息')
+  })
+
+  test('mention with name but no open_id', () => {
+    const text = '@_user_1 你好'
+    const mentions = [{ key: '@_user_1', name: '温昕昕' }]
+    expect(replaceMentionPlaceholders(text, mentions)).toBe('@温昕昕 你好')
+  })
+
+  test('empty text returns empty', () => {
+    expect(replaceMentionPlaceholders('', [{ key: '@_user_1', name: 'A' }])).toBe('')
+  })
+})
+
 describe('message dedup', () => {
   test('first message is new', () => {
     const dedup = createDedup()

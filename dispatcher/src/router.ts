@@ -1,4 +1,5 @@
 import type { ParsedMessage, Gateway } from './types.js'
+import type { LarkGateway } from './gateways/lark/ws.js'
 import { Mutex } from './utils/mutex.js'
 import { WorkerPool } from './pool.js'
 import { log } from './utils/logger.js'
@@ -29,6 +30,12 @@ export class Router {
       // Get worker
       const worker = await this._pool.getWorker(key)
 
+      // Emoji state: OnIt — worker assigned
+      const tracker = this._getTracker(msg.platform)
+      if (tracker) {
+        await tracker.transition(msg.messageId, msg.chatId, 'OnIt')
+      }
+
       // Forward message to plugin
       log.info(TAG, `Forwarding to :${worker.port} for ${key}`)
 
@@ -55,12 +62,22 @@ export class Router {
       }
     } catch (e) {
       log.error(TAG, `Route error for ${key}: ${e}`)
+      // Emoji state: Facepalm — routing error
+      const tracker = this._getTracker(msg.platform)
+      if (tracker) {
+        await tracker.transition(msg.messageId, msg.chatId, 'FACEPALM').catch(() => {})
+      }
     } finally {
       queue.release()
     }
   }
 
   // ── Private ──
+
+  private _getTracker(platform: string) {
+    const gw = this._gateways.get(platform)
+    return gw && 'tracker' in gw ? (gw as LarkGateway).tracker : null
+  }
 
   private _getQueue(key: string): Mutex {
     let q = this._queues.get(key)

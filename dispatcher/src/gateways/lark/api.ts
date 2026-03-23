@@ -97,11 +97,15 @@ export class LarkApi {
         case 'interactive':
         default:
           finalMsgType = 'interactive'
-          // Auto-detect: if text is valid card JSON, pass through
+          // Auto-detect: if text is valid card JSON, pass through with strict validation
           if (text.trimStart().startsWith('{')) {
             try {
               const parsed = JSON.parse(text)
-              if (parsed.schema || parsed.config || parsed.header || parsed.elements) {
+              // v2.0 card: schema + body.elements
+              if (parsed.schema === '2.0' && Array.isArray(parsed.body?.elements)) {
+                isCardJson = true
+              // v1 card: config + header + elements
+              } else if (parsed.config && parsed.header && Array.isArray(parsed.elements)) {
                 isCardJson = true
               }
             } catch {}
@@ -132,13 +136,15 @@ export class LarkApi {
       try {
         await sendOnce(finalMsgType, content)
       } catch (sendErr: any) {
-        // If interactive card JSON failed (400), fallback to markdown card wrapping the raw text
+        // If interactive card JSON failed, extract meaningful text and fallback
         if (finalMsgType === 'interactive' && isCardJson) {
-          log.warn(TAG, `Card JSON rejected by Lark API, falling back to markdown card: ${sendErr}`)
+          log.warn(TAG, `Card JSON rejected by Lark API, falling back to extracted text: ${sendErr}`)
+          log.info(TAG, `Original card JSON (truncated): ${text.slice(0, 300)}`)
+          const extracted = extractCardText(text)
           const fallback = JSON.stringify({
             schema: '2.0',
             config: { wide_screen_mode: true },
-            body: { elements: [{ tag: 'markdown', content: text }] },
+            body: { elements: [{ tag: 'markdown', content: extracted || '[卡片内容解析失败]' }] },
           })
           await sendOnce('interactive', fallback)
         } else {
@@ -154,14 +160,17 @@ export class LarkApi {
   }
 
   async addReaction(chatId: string, messageId: string, emoji: string): Promise<string | null> {
+    const emojiType = resolveEmojiType(emoji)
     try {
       const res = await (this._client as any).im.messageReaction.create({
         path: { message_id: messageId },
-        data: { reaction_type: { emoji_type: emoji } },
+        data: { reaction_type: { emoji_type: emojiType } },
       })
-      return res?.reaction_id ?? res?.data?.reaction_id ?? null
+      const reactionId = res?.reaction_id ?? res?.data?.reaction_id ?? null
+      log.info(TAG, `addReaction ${emojiType} → reactionId=${reactionId} (keys: ${Object.keys(res?.data ?? res ?? {}).join(',')})`)
+      return reactionId
     } catch (e) {
-      log.warn(TAG, `Failed to add reaction ${emoji} to ${messageId}: ${e}`)
+      log.warn(TAG, `Failed to add reaction ${emojiType} to ${messageId}: ${e}`)
       return null
     }
   }
@@ -286,181 +295,103 @@ export class LarkApi {
     }
   }
 
-  // ── CardKit streaming API ──
+}
 
-  /**
-   * Create a card entity via cardkit API. Returns the card_id.
-   */
-  async createCardEntity(card: Record<string, unknown>): Promise<string> {
-    try {
-      const res = await (this._client as any).cardkit.v1.card.create({
-        data: { type: 'card_json', data: JSON.stringify(card) },
-      })
-      if (res?.code !== 0) {
-        throw new Error(`createCardEntity failed (code ${res?.code}): ${res?.msg ?? ''}`)
-      }
-      const cardId = res?.data?.card_id
-      if (!cardId) throw new Error('Card entity created but no card_id returned')
-      log.info(TAG, `Card entity created: ${cardId}`)
-      return cardId
-    } catch (e) {
-      log.error(TAG, `Failed to create card entity: ${e}`)
-      throw e
-    }
+// ── Emoji type resolution ──
+
+/**
+ * Map common unicode emoji / aliases to valid Feishu emoji_type strings.
+ * Casing aligned with larksuite/openclaw-lark FeishuEmoji + VALID_FEISHU_EMOJI_TYPES.
+ * @see https://github.com/larksuite/openclaw-lark/blob/main/src/messaging/outbound/reactions.ts
+ */
+const EMOJI_MAP: Record<string, string> = {
+  // Unicode → Feishu type (casing from VALID_FEISHU_EMOJI_TYPES)
+  '👀': 'GLANCE', '👍': 'THUMBSUP', '👎': 'ThumbsDown', '✅': 'DONE',
+  '❌': 'CrossMark', '🎉': 'PARTY', '❤️': 'HEART', '💔': 'HEARTBROKEN',
+  '🤔': 'THINKING', '😂': 'LOL', '😢': 'CRY', '😱': 'TERROR',
+  '🤦': 'FACEPALM', '💪': 'MUSCLE', '🔥': 'Fire', '💯': 'Hundred',
+  '👏': 'APPLAUSE', '🙏': 'THANKS', '😊': 'SMILE', '😄': 'LAUGH',
+  '🤗': 'HUG', '💀': 'SKULL', '💩': 'POOP', '🌹': 'ROSE',
+  '🍺': 'BEER', '🎂': 'CAKE', '🎁': 'GIFT', '☕': 'Coffee',
+  '🏆': 'Trophy', '💣': 'BOMB', '🎵': 'Music', '📌': 'Pin',
+  '⏰': 'Alarm', '📢': 'Loudspeaker', '✔️': 'CheckMark',
+}
+
+/** Lowercase alias → Feishu type (for Claude tool calls that use lowercase names). */
+const ALIAS_MAP: Record<string, string> = {
+  'eyes': 'GLANCE', 'thumbsup': 'THUMBSUP', 'thumbsdown': 'ThumbsDown',
+  'done': 'DONE', 'ok': 'OK', 'facepalm': 'FACEPALM', 'heart': 'HEART',
+  'fire': 'Fire', 'thinking': 'THINKING', 'party': 'PARTY', 'typing': 'Typing',
+  'onit': 'OnIt', 'lgtm': 'LGTM', 'muscle': 'MUSCLE', 'applause': 'APPLAUSE',
+  'clap': 'CLAP', 'praise': 'PRAISE', 'skull': 'SKULL', 'poop': 'POOP',
+  'checkmark': 'CheckMark', 'crossmark': 'CrossMark', 'hundred': 'Hundred',
+}
+
+/** Resolve emoji input to a valid Feishu emoji_type string. */
+function resolveEmojiType(input: string): string {
+  // Unicode emoji lookup
+  if (EMOJI_MAP[input]) return EMOJI_MAP[input]
+  // Already a valid Feishu type with correct casing (e.g. "DONE", "OnIt", "Typing")
+  if (/^[A-Za-z0-9_]+$/.test(input)) {
+    return ALIAS_MAP[input.toLowerCase()] ?? input
   }
+  return input
+}
 
-  /**
-   * Send a card entity by card_id reference. Returns the message_id.
-   */
-  async sendCardByRef(
-    chatId: string,
-    cardId: string,
-    opts?: { replyToMessageId?: string },
-  ): Promise<string> {
-    try {
-      const content = JSON.stringify({ type: 'card', data: { card_id: cardId } })
-      let res: any
+// ── Card text extraction helper ──
 
-      if (opts?.replyToMessageId) {
-        res = await (this._client as any).im.message.reply({
-          path: { message_id: opts.replyToMessageId },
-          data: { msg_type: 'interactive', content },
-        })
-      } else {
-        res = await (this._client as any).im.message.create({
-          params: { receive_id_type: 'chat_id' },
-          data: { receive_id: chatId, msg_type: 'interactive', content },
-        })
-      }
+/** Extract meaningful text from card JSON for fallback display. */
+function extractCardText(jsonStr: string): string {
+  try {
+    const card = JSON.parse(jsonStr)
+    const parts: string[] = []
 
-      const messageId = res?.data?.message_id ?? 'unknown'
-      log.info(TAG, `Card ref ${cardId} sent to ${chatId}: ${messageId}`)
-      return messageId
-    } catch (e) {
-      log.error(TAG, `Failed to send card ref to ${chatId}: ${e}`)
-      throw e
-    }
+    // Header title
+    const title = card.header?.title?.content ?? card.header?.title?.text
+    if (title) parts.push(`**${title}**`)
+
+    // Body elements (v2.0)
+    const elements = card.body?.elements ?? card.elements ?? []
+    collectElementText(elements, parts)
+
+    return parts.join('\n\n')
+  } catch {
+    return ''
   }
+}
 
-  /**
-   * Insert card elements (create elements within a card entity).
-   */
-  async insertCardElement(
-    cardId: string,
-    opts: {
-      type: 'insert_before' | 'insert_after' | 'append'
-      targetElementId?: string
-      elements: Record<string, unknown>[]
-      sequence: number
-    },
-  ): Promise<void> {
-    try {
-      const res = await (this._client as any).cardkit.v1.cardElement.create({
-        path: { card_id: cardId },
-        data: {
-          type: opts.type,
-          target_element_id: opts.targetElementId,
-          elements: JSON.stringify(opts.elements),
-          sequence: opts.sequence,
-        },
-      })
-      if (res?.code !== 0) {
-        throw new Error(`insertCardElement failed (code ${res?.code}): ${res?.msg ?? ''}`)
-      }
-    } catch (e) {
-      log.error(TAG, `Failed to insert card element: ${e}`)
-      throw e
-    }
-  }
+function collectElementText(elements: unknown[], parts: string[]): void {
+  for (const el of elements) {
+    if (!el || typeof el !== 'object') continue
+    const e = el as Record<string, unknown>
 
-  /**
-   * Partially update a card element's properties.
-   */
-  async patchCardElement(
-    cardId: string,
-    elementId: string,
-    partial: Record<string, unknown>,
-    sequence: number,
-  ): Promise<void> {
-    try {
-      const res = await (this._client as any).cardkit.v1.cardElement.patch({
-        path: { card_id: cardId, element_id: elementId },
-        data: { partial_element: JSON.stringify(partial), sequence },
-      })
-      if (res?.code !== 0) {
-        throw new Error(`patchCardElement failed (code ${res?.code}): ${res?.msg ?? ''}`)
-      }
-    } catch (e) {
-      log.error(TAG, `Failed to patch card element: ${e}`)
-      throw e
-    }
-  }
-
-  /**
-   * Stream-update a text/markdown element's content (typewriter effect).
-   * Pass the FULL accumulated text — the platform computes the delta.
-   */
-  async updateCardElementContent(
-    cardId: string,
-    elementId: string,
-    content: string,
-    sequence: number,
-  ): Promise<void> {
-    try {
-      const res = await (this._client as any).cardkit.v1.cardElement.content({
-        path: { card_id: cardId, element_id: elementId },
-        data: { content, sequence },
-      })
-      if (res?.code !== 0) {
-        throw new Error(`updateCardElementContent failed (code ${res?.code}): ${res?.msg ?? ''}`)
-      }
-    } catch (e) {
-      log.error(TAG, `Failed to update card element content: ${e}`)
-      throw e
-    }
-  }
-
-  /**
-   * Delete a card element by ID.
-   */
-  async deleteCardElement(
-    cardId: string,
-    elementId: string,
-    sequence: number,
-  ): Promise<void> {
-    try {
-      const res = await (this._client as any).cardkit.v1.cardElement.delete({
-        path: { card_id: cardId, element_id: elementId },
-        data: { sequence },
-      })
-      if (res?.code !== 0) {
-        throw new Error(`deleteCardElement failed (code ${res?.code}): ${res?.msg ?? ''}`)
-      }
-    } catch (e) {
-      log.error(TAG, `Failed to delete card element: ${e}`)
-      throw e
-    }
-  }
-
-  /**
-   * Close streaming mode for a card entity.
-   */
-  async closeCardStreaming(cardId: string, sequence: number): Promise<void> {
-    try {
-      const res = await (this._client as any).cardkit.v1.card.settings({
-        path: { card_id: cardId },
-        data: {
-          settings: JSON.stringify({ config: { streaming_mode: false } }),
-          sequence,
-        },
-      })
-      if (res?.code !== 0) {
-        throw new Error(`closeCardStreaming failed (code ${res?.code}): ${res?.msg ?? ''}`)
-      }
-      log.info(TAG, `Streaming closed for card ${cardId}`)
-    } catch (e) {
-      log.error(TAG, `Failed to close card streaming: ${e}`)
-      throw e
+    switch (e.tag) {
+      case 'markdown':
+        if (e.content) parts.push(String(e.content))
+        break
+      case 'div':
+        if (e.text && typeof e.text === 'object') {
+          const t = e.text as Record<string, unknown>
+          if (t.content) parts.push(String(t.content))
+        }
+        break
+      case 'plain_text':
+        if (e.content) parts.push(String(e.content))
+        break
+      case 'column_set':
+        if (Array.isArray(e.columns)) {
+          for (const col of e.columns) {
+            if (col && typeof col === 'object' && Array.isArray((col as any).elements)) {
+              collectElementText((col as any).elements, parts)
+            }
+          }
+        }
+        break
+      case 'collapsible_panel':
+        if (Array.isArray(e.elements)) {
+          collectElementText(e.elements as unknown[], parts)
+        }
+        break
     }
   }
 }

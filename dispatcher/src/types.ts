@@ -79,6 +79,7 @@ export interface LarkConfig {
   appId: string
   appSecret: string
   domain: 'feishu' | 'lark'
+  superadmins?: string[]
   access: AccessConfig
 }
 

@@ -1,4 +1,4 @@
-import type { ParsedMessage, LarkConfig, Attachment } from '../../types.js'
+import type { ParsedMessage, LarkConfig, AccessConfig, Attachment } from '../../types.js'
 import { markSeen } from '../../utils/dedup.js'
 import { log } from '../../utils/logger.js'
 
@@ -86,6 +86,29 @@ function applyStyles(text: string, styles: string[]): string {
   return r
 }
 
+// ── Mention placeholder replacement ──
+
+/**
+ * Replace @_user_N placeholders with real user names and open_ids.
+ * Feishu text messages contain placeholders like "@_user_1" which map to
+ * entries in the mentions array: { key: "@_user_1", id: { open_id: "ou_xxx" }, name: "温昕昕" }
+ */
+function replaceMentionPlaceholders(text: string, mentions?: any[]): string {
+  if (!mentions?.length || !text) return text
+  let result = text
+  for (const m of mentions) {
+    const key = m.key as string | undefined   // e.g. "@_user_1"
+    const name = m.name as string | undefined  // e.g. "温昕昕"
+    const openId = m.id?.open_id as string | undefined
+    if (!key) continue
+    const replacement = name
+      ? (openId ? `@${name}(${openId})` : `@${name}`)
+      : (openId ?? key)
+    result = result.replace(key, replacement)
+  }
+  return result
+}
+
 // ── Bot mention detection ──
 
 function isBotMentioned(event: any, botOpenId?: string): boolean {
@@ -105,10 +128,8 @@ export function gate(
   chatType: 'private' | 'group',
   senderId: string,
   mentionedBot: boolean,
-  config: LarkConfig
+  access: AccessConfig,
 ): GateResult {
-  const access = config.access
-
   if (chatType === 'private') {
     if (access.dmPolicy === 'disabled') return { action: 'drop' }
     if (access.dmPolicy === 'open') return { action: 'allow' }
@@ -152,8 +173,9 @@ export function parseEvent(event: any, botOpenId?: string): ParsedMessage | null
   const rawText = extractText(rawContent, msgType)
   const attachments = extractAttachments(rawContent, msgType)
 
-  // Build content
-  let text = rawText
+  // Replace @_user_N placeholders with real names + open_id
+  let text = replaceMentionPlaceholders(rawText, event.message?.mentions)
+
   if (!text && attachments.length) text = `[${msgType} message]`
   else if (!text) text = '(attachment)'
 

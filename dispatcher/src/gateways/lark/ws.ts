@@ -1,7 +1,8 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
-import type { LarkConfig, Gateway, ParsedMessage, SendOpts } from '../../types.js'
+import type { LarkConfig, Gateway, ParsedMessage, SendOpts, AccessConfig } from '../../types.js'
 import { parseEvent, gate } from './receiver.js'
 import { LarkApi } from './api.js'
+import { ReactionTracker } from '../../reaction-tracker.js'
 import { handleCardAction } from '../../permission.js'
 import { log } from '../../utils/logger.js'
 
@@ -14,16 +15,24 @@ export class LarkGateway implements Gateway {
   private _api: LarkApi
   private _botOpenId?: string
   private _config: LarkConfig
+  private _tracker: ReactionTracker
 
-  // Track ack reactions per message for cleanup
-  private _ackReactions = new Map<string, string>() // messageId → reactionId
+  /** Optional live access config override (from AdminManager). */
+  private _liveAccessConfig?: () => AccessConfig
 
   constructor(config: LarkConfig) {
     this._config = config
     this._api = new LarkApi(config)
+    this._tracker = new ReactionTracker(this._api)
   }
 
   get api(): LarkApi { return this._api }
+  get tracker(): ReactionTracker { return this._tracker }
+
+  /** Set a function that returns live access config (used by AdminManager). */
+  setLiveAccessConfig(fn: () => AccessConfig): void {
+    this._liveAccessConfig = fn
+  }
 
   async start(onMessage: (msg: ParsedMessage) => void): Promise<void> {
     // Fetch bot open_id
@@ -46,6 +55,10 @@ export class LarkGateway implements Gateway {
     }
 
     dispatcher.register({
+      // Suppress "no handle" warnings for reaction events (we don't need to act on them)
+      'im.message.reaction.created_v1': async () => ({}),
+      'im.message.reaction.deleted_v1': async () => ({}),
+
       // v2: Card action callback for permission buttons
       'card.action.trigger_v1': async (data: any) => {
         log.info(TAG, `CARD ACTION: ${JSON.stringify(data?.action?.value ?? {}).slice(0, 200)}`)
@@ -71,15 +84,13 @@ export class LarkGateway implements Gateway {
           return {}
         }
 
-        // Log gate result for debugging
-        const gateResult = gate(parsed.chatId, parsed.chatType, parsed.senderId, parsed.mentionedBot, this._config)
-        log.info(TAG, `GATE: chatId=${parsed.chatId} type=${parsed.chatType} mentioned=${parsed.mentionedBot} autoReply=${this._config.access.groupAutoReply.includes(parsed.chatId)} → ${gateResult.action}`)
-
-        // Gate check
+        // Gate check (use live access config if available)
+        const accessConfig = this._liveAccessConfig ? this._liveAccessConfig() : this._config.access
         const result = gate(
           parsed.chatId, parsed.chatType, parsed.senderId,
-          parsed.mentionedBot, this._config
+          parsed.mentionedBot, accessConfig
         )
+        log.info(TAG, `GATE: chatId=${parsed.chatId} type=${parsed.chatType} mentioned=${parsed.mentionedBot} → ${result.action}`)
 
         if (result.action === 'drop') {
           log.info(TAG, `DROPPED: ${parsed.messageId}`)
@@ -94,11 +105,8 @@ export class LarkGateway implements Gateway {
           return {}
         }
 
-        // Typing indicator (aligned with OpenClaw: "Typing" emoji on every message, removed on done)
-        const reactionId = await this._api.addReaction(parsed.chatId, parsed.messageId, 'Typing')
-        if (reactionId) {
-          this._ackReactions.set(parsed.messageId, reactionId)
-        }
+        // Emoji state: Typing — message received (aligned with openclaw-lark)
+        await this._tracker.transition(parsed.messageId, parsed.chatId, 'Typing')
 
         // Route
         onMessage(parsed)
@@ -121,7 +129,7 @@ export class LarkGateway implements Gateway {
   }
 
   async stop(): Promise<void> {
-    // Lark WSClient doesn't expose a stop method; process exit cleans up
+    await this._tracker.dispose()
     log.info(TAG, 'Gateway stopping')
   }
 
@@ -135,15 +143,6 @@ export class LarkGateway implements Gateway {
 
   async removeReaction(chatId: string, messageId: string, reactionId: string): Promise<void> {
     await this._api.removeReaction(chatId, messageId, reactionId)
-  }
-
-  /** Remove ack reaction on completion (aligned with NeoClaw: just remove, no success emoji). */
-  async ackDone(messageId: string): Promise<void> {
-    const reactionId = this._ackReactions.get(messageId)
-    if (reactionId) {
-      await this._api.removeReaction('', messageId, reactionId)
-      this._ackReactions.delete(messageId)
-    }
   }
 
   async fetchMessages(chatId: string, limit: number) {
