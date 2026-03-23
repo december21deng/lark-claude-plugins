@@ -47,6 +47,7 @@ export class Router {
           platform: msg.platform,
           meta: {
             chat_id: msg.chatId,
+            chat_type: msg.chatType,
             message_id: msg.messageId,
             user: msg.senderName,
             user_id: msg.senderId,
