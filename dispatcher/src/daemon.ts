@@ -195,6 +195,13 @@ export async function startDaemon(config: AppConfig): Promise<void> {
                 autoDetectChatMode(larkGw.api, adminManager, manageArgs.target_id)
               }
 
+              if (!result.ok) {
+                return Response.json({
+                  result: { content: [{ type: 'text', text: resultText }] },
+                  isError: true,
+                })
+              }
+
               break
             }
 
