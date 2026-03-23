@@ -38,7 +38,7 @@ export async function startDaemon(config: AppConfig): Promise<void> {
   larkGw.setLiveAccessConfig(() => adminManager.getLiveAccessConfig(config.lark.access))
 
   // ── Sender tracking (convKey → sender info + pending message IDs for emoji batch) ──
-  const senderMap = new Map<string, { senderId: string; chatId: string; messageIds: string[] }>()
+  const senderMap = new Map<string, { senderId: string; chatId: string; chatType: 'private' | 'group'; messageIds: string[] }>()
 
   // ── Init router ──
   const router = new Router(pool, gateways)
@@ -184,9 +184,13 @@ export async function startDaemon(config: AppConfig): Promise<void> {
                 break
               }
 
-              // Only allowed in DM
-              // convKey format: "lark:<chatId>" or "lark:<chatId>_thread_<threadId>"
-              // DM chatIds start with different patterns, but we track chatType via the message
+              // Only allowed in DM — reject group messages
+              if (sender.chatType !== 'private') {
+                resultText = '权限管理操作只能在私聊中进行，请私聊我来管理群权限和管理员。'
+                log.info(TAG, `manage_access rejected: not DM (chatType=${sender.chatType})`)
+                break
+              }
+
               log.info(TAG, `manage_access: action=${manageArgs.action} sender=${sender.senderId}`)
 
               const result = adminManager.execute(manageArgs, sender.senderId)
@@ -255,7 +259,7 @@ export async function startDaemon(config: AppConfig): Promise<void> {
       if (existing) {
         existing.messageIds.push(msg.messageId)
       } else {
-        senderMap.set(convKey, { senderId: msg.senderId, chatId: msg.chatId, messageIds: [msg.messageId] })
+        senderMap.set(convKey, { senderId: msg.senderId, chatId: msg.chatId, chatType: msg.chatType, messageIds: [msg.messageId] })
       }
 
       // Route (async, don't await — let the gateway continue receiving)
