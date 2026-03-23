@@ -11,7 +11,7 @@ Interacting with Claude Code through IM (Lark/Feishu, Discord, etc.) requires sa
 4. **Session management** -- Context persistence, resume, recovery after eviction
 5. **Multi-platform** -- Support Lark and Discord (v2 extension)
 6. **Permission forwarding** -- Forward Claude's permission prompts to IM (v2, implemented)
-7. **Streaming cards** -- Real-time progress display in IM (v2, implemented)
+7. **Emoji state machine** -- Multi-stage emoji feedback for message processing lifecycle (v3, implemented)
 
 ### 1.2 Constraints
 - Remote MCPs are `type: "sdk"`, injected by Claude Desktop, **only available when Claude CLI is the main process**
@@ -47,7 +47,8 @@ Lark Cloud
 |  | Worker Pool (tmux mgmt)       |   |
 |  | Session Store (persistence)   |   |
 |  | Permission (card forwarding)  |   |
-|  | Streaming Card (CardKit API)  |   |
+|  | Reaction Tracker (emoji state)|   |
+|  | Admin Manager (group/admin)   |   |
 |  +------------+------------------+   |
 |               |                      |
 |  +- API ------v------------------+   |
@@ -131,14 +132,18 @@ Daemon shutdown
   -> Kill all tmux sessions
 ```
 
-### 2.5 Emoji Reactions (OpenClaw Style)
+### 2.5 Emoji Reactions (v3 State Machine)
 
 | Timing | Emoji | Behavior |
 |--------|-------|----------|
-| Message received | `Typing` | Add (keyboard animation, indicates processing) |
-| Reply sent | - | Remove `Typing` |
-| Error | - | Remove `Typing` (silent) |
-| Add/remove failure | - | Silent ignore, does not affect main flow |
+| Message received | `Typing` | Add (keyboard animation) |
+| Worker assigned | `OnIt` | Replace Typing |
+| Reply sent | `DONE` | Replace OnIt (permanent) |
+| Error | `FACEPALM` | Replace current (permanent) |
+
+All emoji types from openclaw-lark `VALID_FEISHU_EMOJI_TYPES`.
+Batch processing: multiple pending messages all get DONE on reply.
+No TTL sweep -- lifecycle-driven cleanup only.
 
 ## 3. Project Structure
 
@@ -161,7 +166,8 @@ lark-claude-plugins/
 │   │   ├── pool.ts                  # Worker Pool: tmux mgmt + assignment + eviction + resume
 │   │   ├── router.ts                # Message routing: convKey + Mutex queue + slash commands
 │   │   ├── permission.ts            # Permission forwarding: interactive card with Allow/Deny
-│   │   ├── streaming-card.ts        # Streaming card: CardKit API + collapsible tool panel
+│   │   ├── reaction-tracker.ts      # Emoji state machine: lifecycle-driven reactions
+│   │   ├── admin.ts                 # Admin management: group/admin CRUD
 │   │   ├── session-store.ts         # Session persistence
 │   │   ├── config.ts                # Config loading
 │   │   ├── types.ts                 # Shared types
@@ -176,12 +182,16 @@ lark-claude-plugins/
 │   │       ├── dedup.ts
 │   │       ├── debounced-flush.ts
 │   │       └── logger.ts
-│   └── tests/                       # 52 unit tests
+│   └── tests/                       # 117 unit tests
 │       ├── mutex.test.ts
 │       ├── dedup.test.ts
 │       ├── router.test.ts
 │       ├── session-store.test.ts
-│       └── receiver.test.ts
+│       ├── receiver.test.ts
+│       ├── reaction-tracker.test.ts
+│       ├── admin.test.ts
+│       ├── emoji-resolve.test.ts
+│       └── reply-threading.test.ts
 │
 ├── README.md                        # English (default)
 ├── README_CN.md                     # Chinese
@@ -197,6 +207,8 @@ lark-claude-plugins/
 ~/.lark-dispatcher/
 ├── config.json
 ├── sessions.json
+├── admins.json      (managed by AdminManager)
+├── groups.json      (managed by AdminManager)
 ├── daemon.pid
 └── logs/
 ```
@@ -226,6 +238,7 @@ lark-claude-plugins/
 |     |- idle worker -> health check -> healthy = assign               |
 |     |- unhealthy worker -> kill tmux -> rebuild -> assign            |
 |     +- pool full -> evict LRU -> kill tmux -> rebuild --resume       |
+|  5b. router: transition emoji to OnIt                                |
 |  6. router: POST localhost:{worker.port}/message                     |
 |                                                                       |
 |  --- Enter Claude CLI (tmux session) ---                              |
@@ -238,7 +251,7 @@ lark-claude-plugins/
 |  --- Back to Daemon ---                                               |
 |                                                                       |
 |  11. daemon: receive tool-call, execute Lark API to send message     |
-|  12. daemon: remove Typing reaction                                  |
+|  12. daemon: batch transition all pending messages to DONE           |
 |  13. router: release Mutex                                           |
 |                                                                       |
 |  --- User receives reply in Lark ---                                  |
@@ -266,30 +279,16 @@ lark-claude-plugins/
 +--------------------------------------------------------------------------+
 ```
 
-### 4.3 Streaming Card Flow (v2)
+### 4.3 Admin Management Flow (v3)
 
 ```
-+- Claude is processing a request -----------------------------------------+
-|                                                                           |
-|  1. plugin: Claude starts working, emits tool_use events                  |
-|  2. plugin: POST localhost:8900/streaming-update                          |
-|                                                                           |
-|  --- Daemon handles ---                                                   |
-|                                                                           |
-|  3. streaming-card.ts: Create card via CardKit API                        |
-|  4. streaming-card.ts: Update card with tool steps (collapsible panel)    |
-|  5. streaming-card.ts: Stream text with typewriter effect                 |
-|  6. On final reply: auto-finalize the card                                |
-|                                                                           |
-|  User sees real-time progress in Lark:                                    |
-|  +----------------------------------+                                     |
-|  | [v] Tool steps                   |                                     |
-|  |   - search_web("query")          |                                     |
-|  |   - read_file("/path/to/file")   |                                     |
-|  |                                   |                                     |
-|  | Here is the answer based on...    |                                     |
-|  +----------------------------------+                                     |
-+---------------------------------------------------------------------------+
+Admin sends DM to bot (natural language, e.g. "add snow to sales group")
+→ Normal routing to Claude worker
+→ Claude understands intent, calls manage_access tool
+→ Plugin proxies to daemon /tool-call
+→ Daemon checks sender permission (superadmin/admin)
+→ AdminManager executes action, persists to groups.json/admins.json
+→ Returns result to Claude → Claude replies to admin
 ```
 
 ### 4.4 Worker Assignment and Eviction Example
@@ -326,6 +325,7 @@ lark-claude-plugins/
     "appId": "cli_xxx",
     "appSecret": "xxx",
     "domain": "feishu",
+    "superadmins": ["ou_xxx_janice"],
     "access": {
       "dmPolicy": "open",
       "allowFrom": [],
@@ -378,14 +378,18 @@ bun run src/index.ts stop
 - [x] Emoji: Typing reaction (OpenClaw style)
 - [x] Eviction: kill tmux + rebuild --resume (context isolation)
 
-### Phase 2: Streaming + Permission -- Complete
-- [x] Plugin -> daemon streaming event push
-- [x] Lark streaming cards via CardKit API (collapsible tool panel, typewriter text)
+### Phase 2: Permission + Standalone -- Complete
 - [x] Permission forwarding to Lark interactive cards (Allow/Deny buttons, text fallback)
 - [x] Plugin standalone mode (direct WebSocket without daemon)
 
-### Phase 3: Testing -- Complete
-- [x] 52 unit tests (mutex, dedup, router, session-store, receiver)
+### Phase 3: v3 Features -- Complete
+- [x] Emoji state machine (Typing → OnIt → DONE/FACEPALM lifecycle)
+- [x] Admin management (natural language group/admin CRUD via Claude)
+- [x] Session persistence improvements
+- [x] Card fix and mention resolution
+
+### Phase 4: Testing -- Complete
+- [x] 117 unit tests across 9 files (mutex, dedup, router, session-store, receiver, reaction-tracker, admin, emoji-resolve, reply-threading)
 - [x] All tests passing (`cd dispatcher && bun test`)
 
 ## 8. Risks and Mitigations
@@ -399,4 +403,4 @@ bun run src/index.ts stop
 | sessions.json corruption | try-catch + empty map fallback |
 | 10 workers memory usage | Claude CLI idle: CPU=0, ~200MB/worker |
 | Permission card timeout | 2-minute deadline, auto-deny on expiration |
-| Streaming card API rate limits | Debounced flush, batch updates |
+| Unattended worker blocked by interactive confirm | System prompt forbids interactive operations |

@@ -10,21 +10,35 @@ Chat with Claude Code through Lark/Feishu. Two modes: simple standalone for pers
 - **Daemon + Worker Pool** -- tmux-based, up to 10 parallel Claude CLI workers
 - **Lark WebSocket** -- real-time message receive/send via long connection
 - **Interactive card replies** -- Markdown rendering with card JSON auto-detection
-- **Typing emoji feedback** -- keyboard animation while processing (OpenClaw style)
+- **Typing emoji feedback** -- Emoji state machine -- Typing → OnIt → DONE lifecycle (openclaw-lark aligned)
 - **Multi-session parallelism** -- different threads routed to different workers
 - **Session isolation** -- eviction + `--resume` context recovery, no cross-talk
 - **All remote MCPs** -- Clay, Gmail, Calendar, Context7, and all Claude Desktop MCPs
 - **Image support** -- receive (download to inbox) + send (upload + image_key)
 - **All Lark msg_type** -- text, post, image, file, interactive, audio, media, sticker, etc.
-- **Card JSON auto-detection** -- raw card JSON sent as-is, plain text wrapped in markdown card
+- **Card JSON auto-detection** -- raw card JSON sent as-is, plain text wrapped in markdown card; strict validation + text extraction fallback
 - **Thread-aware routing** -- topic groups get per-thread workers
 - **Slash commands** -- `/clear`, `/new`, `/status`, `/help`
 
-### Streaming Cards (v2)
-Real-time progress display via Lark CardKit API:
-- Tool-use steps shown in a collapsible panel as Claude works
-- Text updates with typewriter streaming effect
-- Card auto-finalized when Claude sends the final reply
+### Emoji State Machine (v3)
+Typing → OnIt → DONE/FACEPALM lifecycle, aligned with openclaw-lark:
+- Typing emoji shown while Claude is processing
+- OnIt emoji when actively working on the task
+- DONE or FACEPALM on completion/failure
+
+### Admin Management (v3)
+Natural language group/admin management via `manage_access` tool:
+- Two-level admin system: superadmin + admin
+- Add/remove groups and admins through DM conversation
+- No slash commands needed -- just describe what you want
+
+### Session Persistence (v3)
+Sessions survive daemon restarts via `--session-id` / `--resume`:
+- Worker sessions stored with stable IDs
+- Daemon restart resumes existing sessions without context loss
+
+### Mention Resolution
+`@_user_N` placeholders in Claude's replies replaced with real names + open_id before sending.
 
 ### Permission Forwarding (v2)
 Claude's permission prompts forwarded to Lark as interactive cards:
@@ -103,7 +117,8 @@ Create a self-built app on [Lark Open Platform](https://open.larksuite.com):
    - `im:message.group_msg:readonly` -- receive all group messages (not just @mentions)
 4. Events & Callbacks -> choose **Long Connection (WebSocket)** mode
 5. Subscribe event -> `im.message.receive_v1`
-6. Subscribe event -> `card.action.trigger` (required for permission forwarding buttons)
+6. Subscribe event -> `im.message.reaction.created_v1` and `im.message.reaction.deleted_v1`
+7. Subscribe event -> `card.action.trigger` (required for permission forwarding buttons)
 
 ### 3a. Standalone: Set Credentials and Start
 
@@ -176,6 +191,15 @@ Manage with the skill: `/lark-standalone:access` or `/lark-customized:access`
 
 Dispatcher mode also supports `dmPolicy: "open"` in config.json for allowing all users.
 
+#### Two-Level Admin System (v3)
+
+| Role | Source | Can manage |
+|------|--------|------------|
+| superadmin | `config.json` (`lark.superadmins`) | admins + groups |
+| admin | `admins.json` | groups |
+
+All management via natural language in DM -- no slash commands needed. Send messages like "add group oc_xxx" or "remove admin ou_yyy" to the bot.
+
 ### Remote MCPs
 
 Each Claude CLI instance automatically loads all connected remote MCPs:
@@ -183,13 +207,14 @@ Clay, Gmail, Google Calendar, Context7, and all MCPs connected in Claude Desktop
 
 ## Testing
 
-52 unit tests covering mutex, dedup, router, session-store, and receiver:
+117 unit tests covering mutex, dedup, router, session-store, receiver, reaction-tracker, admin, emoji-resolve, and reply-threading:
 
 ```bash
 cd dispatcher && bun test
 ```
 
-All tests pass. Test files are in `dispatcher/tests/`.
+All tests pass. Test files are in `dispatcher/tests/`, including:
+- `reaction-tracker.test.ts`, `admin.test.ts`, `emoji-resolve.test.ts`, `reply-threading.test.ts`
 
 ## Configuration Reference (Dispatcher)
 
@@ -199,6 +224,7 @@ All tests pass. Test files are in `dispatcher/tests/`.
 | `pool.basePort` | 7100 | Worker port range start |
 | `pool.daemonApiPort` | 8900 | Daemon HTTP API port |
 | `lark.domain` | "feishu" | "feishu" or "lark" |
+| `lark.superadmins` | [] | Array of open_ids with superadmin privileges |
 | `log.level` | "info" | Log level |
 
 ## Stop (Dispatcher)
@@ -218,12 +244,13 @@ cd dispatcher && bun run src/index.ts stop
 | `dispatcher/src/pool.ts` | Worker Pool: tmux management, assignment, eviction, resume |
 | `dispatcher/src/router.ts` | Message routing: convKey, Mutex queuing, slash commands |
 | `dispatcher/src/permission.ts` | Permission forwarding: interactive card with Allow/Deny buttons |
-| `dispatcher/src/streaming-card.ts` | Streaming card manager: CardKit API, collapsible tool panel |
+| `dispatcher/src/reaction-tracker.ts` | Emoji state machine (Typing → OnIt → DONE/FACEPALM) |
+| `dispatcher/src/admin.ts` | Admin & group permission management |
 | `dispatcher/src/session-store.ts` | Session persistence (sessions.json) |
 | `dispatcher/src/gateways/lark/ws.ts` | Lark WebSocket + event handling |
 | `dispatcher/src/gateways/lark/receiver.ts` | Message parsing + dedup + access control |
 | `dispatcher/src/gateways/lark/api.ts` | Lark HTTP API (messages, reactions) |
-| `dispatcher/tests/` | 52 unit tests (mutex, dedup, router, session-store, receiver) |
+| `dispatcher/tests/` | 117 unit tests (mutex, dedup, router, session-store, receiver, reaction-tracker, admin, emoji-resolve, reply-threading) |
 
 ## Troubleshooting
 

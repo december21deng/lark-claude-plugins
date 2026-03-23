@@ -10,7 +10,7 @@
 4. **会话管理** -- 上下文持久化、resume、被驱逐后恢复
 5. **多平台** -- 同时接入飞书和 Discord（v2 扩展）
 6. **Permission 转发** -- 将 Claude 的权限确认转发到 IM（v2，已实现）
-7. **流式卡片** -- 在 IM 中实时显示进度（v2，已实现）
+7. **Emoji 状态机** -- 消息处理生命周期的多阶段 emoji 反馈（v3，已实现）
 
 ### 1.2 约束
 - 远程 MCP 是 `type: "sdk"`，由 Claude Desktop 注入，**只有 Claude CLI 作为主进程时才有**
@@ -46,7 +46,8 @@
 |  | Worker Pool (tmux 管理)        |   |
 |  | Session Store (持久化)         |   |
 |  | Permission (卡片转发)          |   |
-|  | Streaming Card (CardKit API)   |   |
+|  | Reaction Tracker (emoji 状态)  |   |
+|  | Admin Manager (群组/管理员)    |   |
 |  +------------+------------------+   |
 |               |                      |
 |  +- API ------v------------------+   |
@@ -130,14 +131,18 @@ Daemon 关闭
   -> kill 所有 tmux session
 ```
 
-### 2.5 Emoji 反应（OpenClaw 风格）
+### 2.5 Emoji 反应（v3 状态机）
 
 | 时机 | Emoji | 行为 |
 |------|-------|------|
-| 收到消息 | `Typing` | 添加（键盘动画，表示处理中） |
-| 回复成功 | - | 移除 `Typing` |
-| 错误 | - | 移除 `Typing`（静默） |
-| 加/移除失败 | - | 静默忽略，不影响主流程 |
+| 收到消息 | `Typing` | 添加（键盘动画） |
+| Worker 分配 | `OnIt` | 替换 Typing |
+| 回复成功 | `DONE` | 替换 OnIt（永久） |
+| 错误 | `FACEPALM` | 替换当前（永久） |
+
+所有 emoji 类型来自 openclaw-lark `VALID_FEISHU_EMOJI_TYPES`。
+批量处理：回复时所有待处理消息统一转为 DONE。
+无 TTL 定时清理——仅基于生命周期驱动。
 
 ## 3. 项目结构
 
@@ -160,7 +165,8 @@ lark-claude-plugins/
 │   │   ├── pool.ts                  # Worker Pool：tmux 管理 + 分配 + 驱逐 + resume
 │   │   ├── router.ts                # 消息路由：convKey + Mutex 排队 + 斜杠命令
 │   │   ├── permission.ts            # 权限转发：允许/拒绝交互卡片
-│   │   ├── streaming-card.ts        # 流式卡片：CardKit API + 可折叠工具面板
+│   │   ├── reaction-tracker.ts      # Emoji 状态机：生命周期驱动的反应管理
+│   │   ├── admin.ts                 # 管理员管理：群组/管理员 CRUD
 │   │   ├── session-store.ts         # 会话持久化
 │   │   ├── config.ts                # 配置加载
 │   │   ├── types.ts                 # 共享类型
@@ -175,12 +181,16 @@ lark-claude-plugins/
 │   │       ├── dedup.ts
 │   │       ├── debounced-flush.ts
 │   │       └── logger.ts
-│   └── tests/                       # 52 个单元测试
+│   └── tests/                       # 117 个单元测试
 │       ├── mutex.test.ts
 │       ├── dedup.test.ts
 │       ├── router.test.ts
 │       ├── session-store.test.ts
-│       └── receiver.test.ts
+│       ├── receiver.test.ts
+│       ├── reaction-tracker.test.ts
+│       ├── admin.test.ts
+│       ├── emoji-resolve.test.ts
+│       └── reply-threading.test.ts
 │
 ├── README.md                        # 英文（默认）
 ├── README_CN.md                     # 中文
@@ -196,6 +206,8 @@ lark-claude-plugins/
 ~/.lark-dispatcher/
 ├── config.json
 ├── sessions.json
+├── admins.json      (由 AdminManager 管理)
+├── groups.json      (由 AdminManager 管理)
 ├── daemon.pid
 └── logs/
 ```
@@ -225,6 +237,7 @@ lark-claude-plugins/
 |     |- 有空闲 worker -> health check -> 健康则分配                   |
 |     |- worker 不健康 -> kill tmux -> 重建 -> 分配                    |
 |     +- 池满 -> 驱逐最久未用 -> kill tmux -> 重建 --resume -> 分配    |
+|  5b. router: emoji 转为 OnIt                                        |
 |  6. router: POST localhost:{worker.port}/message                    |
 |                                                                     |
 |  --- 进入 Claude CLI（tmux session）---                              |
@@ -237,7 +250,7 @@ lark-claude-plugins/
 |  --- 回到 Daemon ---                                                |
 |                                                                     |
 |  11. daemon: 收到 tool-call，执行飞书 API 发消息                    |
-|  12. daemon: 移除 Typing 反应                                       |
+|  12. daemon: 批量将所有待处理消息 emoji 转为 DONE                    |
 |  13. router: release Mutex                                          |
 |                                                                     |
 |  --- 用户在飞书收到回复 ---                                          |
@@ -265,30 +278,16 @@ lark-claude-plugins/
 +-----------------------------------------------------------------------+
 ```
 
-### 4.3 流式卡片流程（v2）
+### 4.3 管理员管理流程（v3）
 
 ```
-+- Claude 正在处理请求 -------------------------------------------------+
-|                                                                        |
-|  1. plugin: Claude 开始工作，发出 tool_use 事件                         |
-|  2. plugin: POST localhost:8900/streaming-update                       |
-|                                                                        |
-|  --- Daemon 处理 ---                                                   |
-|                                                                        |
-|  3. streaming-card.ts: 通过 CardKit API 创建卡片                       |
-|  4. streaming-card.ts: 用工具步骤更新卡片（可折叠面板）                   |
-|  5. streaming-card.ts: 以打字机效果流式文本                              |
-|  6. 最终回复时：自动定稿卡片                                            |
-|                                                                        |
-|  用户在飞书中看到实时进度：                                              |
-|  +----------------------------------+                                  |
-|  | [v] 工具调用步骤                  |                                  |
-|  |   - search_web("query")          |                                  |
-|  |   - read_file("/path/to/file")   |                                  |
-|  |                                   |                                  |
-|  | 根据分析结果，答案是...             |                                 |
-|  +----------------------------------+                                  |
-+------------------------------------------------------------------------+
+管理员向 bot 发送私聊（自然语言，如"把 snow 加到 sales 群"）
+→ 正常路由到 Claude worker
+→ Claude 理解意图，调用 manage_access 工具
+→ Plugin 代理到 daemon /tool-call
+→ Daemon 检查发送者权限（superadmin/admin）
+→ AdminManager 执行操作，持久化到 groups.json/admins.json
+→ 返回结果给 Claude → Claude 回复管理员
 ```
 
 ### 4.4 Worker 分配与驱逐示例
@@ -325,6 +324,7 @@ lark-claude-plugins/
     "appId": "cli_xxx",
     "appSecret": "xxx",
     "domain": "feishu",
+    "superadmins": ["ou_xxx_janice"],
     "access": {
       "dmPolicy": "open",
       "allowFrom": [],
@@ -377,14 +377,18 @@ bun run src/index.ts stop
 - [x] Emoji: Typing 反应（OpenClaw 风格）
 - [x] 驱逐: kill tmux + 重建 --resume（上下文隔离）
 
-### Phase 2: 流式 + 权限 -- 已完成
-- [x] Plugin -> daemon 流式事件推送
-- [x] 飞书流式卡片（CardKit API，可折叠工具面板，打字机文本）
+### Phase 2: 权限 + 独立模式 -- 已完成
 - [x] Permission 转发到飞书交互卡片（允许/拒绝按钮，文本降级）
 - [x] 插件独立模式（无需 daemon 直连 WebSocket）
 
-### Phase 3: 测试 -- 已完成
-- [x] 52 个单元测试（mutex、dedup、router、session-store、receiver）
+### Phase 3: v3 功能 -- 已完成
+- [x] Emoji 状态机（Typing → OnIt → DONE/FACEPALM 生命周期）
+- [x] 管理员管理（通过 Claude 自然语言群组/管理员 CRUD）
+- [x] Session 持久化改进
+- [x] 卡片修复与 mention 解析
+
+### Phase 4: 测试 -- 已完成
+- [x] 117 个单元测试，覆盖 9 个文件（mutex、dedup、router、session-store、receiver、reaction-tracker、admin、emoji-resolve、reply-threading）
 - [x] 全部测试通过（`cd dispatcher && bun test`）
 
 ## 8. 风险与缓解
@@ -398,4 +402,4 @@ bun run src/index.ts stop
 | sessions.json 损坏 | try-catch + 空 map 降级 |
 | 10 个 worker 内存占用 | Claude CLI 空闲时 CPU=0，内存约 200MB/个 |
 | 权限卡片超时 | 2 分钟期限，超时自动拒绝 |
-| 流式卡片 API 限流 | debounced flush，批量更新 |
+| Worker 无人值守时被交互确认阻塞 | System prompt 禁止交互操作 |
