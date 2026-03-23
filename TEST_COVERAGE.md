@@ -1,6 +1,6 @@
 # Test Coverage — Feature & Test Case Matrix
 
-151 tests across 11 files. All passing.
+154 tests across 11 files. All passing.
 
 ```bash
 cd dispatcher && bun test
@@ -210,6 +210,14 @@ cd dispatcher && bun test
 | No entry returns empty | `no entry returns empty array` | ✅ |
 | Two reply waves | `three messages, two replies scenario` | ✅ |
 
+### 5.4 manage_access DM-Only Enforcement
+
+| Feature | Test Case | Status |
+|---------|-----------|--------|
+| Allowed in private chat | `allows manage_access in private chat` | ✅ |
+| Rejected in group chat | `rejects manage_access in group chat` | ✅ |
+| Rejected when no sender | `rejects when no sender info` | ✅ |
+
 ---
 
 ## 6. Card JSON (`card-detection.test.ts`)
@@ -308,10 +316,10 @@ cd dispatcher && bun test
 | Admin management | 19 | `admin.test.ts` |
 | Emoji type resolution | 17 | `emoji-resolve.test.ts` |
 | Reaction tracker | 10 | `reaction-tracker.test.ts` |
-| Reply threading + batch | 13 | `reply-threading.test.ts` |
+| Reply threading + batch + DM-only | 16 | `reply-threading.test.ts` |
 | Card detection + extraction | 18 | `card-detection.test.ts` |
 | Mutex | 4 | `mutex.test.ts` |
 | Dedup | 5 | `dedup.test.ts` |
 | Router | 16 | `router.test.ts` |
 | Session store | 6 | `session-store.test.ts` |
-| **Total** | **151** | **11 files** |
+| **Total** | **154** | **11 files** |
