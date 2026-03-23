@@ -204,9 +204,17 @@ export async function startDaemon(config: AppConfig): Promise<void> {
                 })
                 log.info(TAG, `manage_access error sent directly to ${sender.chatId}: ${resultText}`)
 
+                // Mark emoji as DONE since we already replied
+                const senderEntry = senderMap.get(body.convKey)
+                if (senderEntry) {
+                  for (const msgId of senderEntry.messageIds) {
+                    await larkGw.tracker.transition(msgId, sender.chatId, 'DONE').catch(() => {})
+                  }
+                  senderEntry.messageIds = []
+                }
+
                 return Response.json({
-                  result: { content: [{ type: 'text', text: `[已直接回复用户] ${resultText}` }] },
-                  isError: true,
+                  result: { content: [{ type: 'text', text: `已直接回复用户，不要再调用 reply 工具回复此消息。错误内容：${resultText}` }] },
                 })
               }
 
