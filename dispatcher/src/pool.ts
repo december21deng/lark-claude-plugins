@@ -334,6 +334,7 @@ export class WorkerPool {
       '禁止手动 react 状态 emoji（👀、✅、🤔等）到用户消息上，系统已自动管理状态 emoji。只有表达语义时才用 react tool。',
       '优先使用已安装的 skill（/skill-name）来完成任务，不要自己从零实现 skill 已覆盖的功能。',
       '不确定飞书 API 是否支持某功能时，先用 Context7 查文档或使用相关 skill，禁止凭猜测回答"不支持"或"做不到"。',
+      '所有飞书回复必须使用 /feishu-card skill 生成 v2 格式的交互卡片 JSON，禁止发送纯文本或 markdown。即使是简短回复，也必须包含 header（带颜色）和 body.elements。卡片 JSON 作为 reply 工具的 text 参数传入即可。',
     ].join(' ')
     const parts = [safetyRules]
     if (this._claudeConfig.systemPrompt) parts.push(this._claudeConfig.systemPrompt)
