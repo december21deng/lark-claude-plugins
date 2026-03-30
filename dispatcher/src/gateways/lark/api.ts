@@ -386,7 +386,24 @@ function sanitizeV2Elements(elements: any[]): { elements: any[]; fixes: string[]
       continue
     }
 
-    // Recursively sanitize nested elements (collapsible_panel, column_set, etc.)
+    // "collapsible_panel" — flatten into inline elements (no folding)
+    if (el.tag === 'collapsible_panel') {
+      // Add panel title as bold markdown
+      const title = el.header?.title?.content
+      if (title) {
+        result.push({ tag: 'markdown', content: `**${title}**` })
+      }
+      // Flatten panel's inner elements to top level
+      if (Array.isArray(el.elements)) {
+        const nested = sanitizeV2Elements(el.elements)
+        result.push(...nested.elements)
+        fixes.push(...nested.fixes)
+      }
+      fixes.push('collapsible_panel→flattened')
+      continue
+    }
+
+    // Recursively sanitize nested elements (column_set, form, interactive_container, etc.)
     if (Array.isArray(el.elements)) {
       const nested = sanitizeV2Elements(el.elements)
       el.elements = nested.elements
