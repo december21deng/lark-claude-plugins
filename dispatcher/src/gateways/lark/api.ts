@@ -97,16 +97,24 @@ export class LarkApi {
         case 'interactive':
         default:
           finalMsgType = 'interactive'
-          // Auto-detect: if text is valid card JSON, pass through with strict validation
+          // Auto-detect: if text is valid card JSON, pass through (auto-convert v1→v2)
           if (text.trimStart().startsWith('{')) {
             try {
               const parsed = JSON.parse(text)
-              // v2.0 card: schema + body.elements
+              // v2.0 card: schema + body.elements — pass through as-is
               if (parsed.schema === '2.0' && Array.isArray(parsed.body?.elements)) {
                 isCardJson = true
-              // v1 card: config + header + elements
+              // v1 card: config + header + top-level elements — auto-convert to v2
               } else if (parsed.config && parsed.header && Array.isArray(parsed.elements)) {
                 isCardJson = true
+                const v2 = {
+                  schema: '2.0',
+                  config: parsed.config,
+                  header: parsed.header,
+                  body: { elements: parsed.elements },
+                }
+                text = JSON.stringify(v2)
+                log.info(TAG, 'Auto-converted v1 card to v2 format')
               }
             } catch {}
           }
