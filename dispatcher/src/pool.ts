@@ -320,6 +320,10 @@ export class WorkerPool {
       '--dangerously-skip-permissions',
     ]
 
+    if (this._claudeConfig.model) {
+      args.push('--model', this._claudeConfig.model)
+    }
+
     // System prompt: safety rules for unattended workers + user-defined prompt
     const safetyRules = [
       '你运行在无人值守的飞书 bot worker 中，终端没有人可以回应交互确认。',

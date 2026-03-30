@@ -100,6 +100,7 @@ export interface ClaudeConfig {
   bin: string
   pluginChannel: string
   systemPrompt?: string
+  model?: string
 }
 
 export interface AppConfig {

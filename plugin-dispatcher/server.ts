@@ -319,9 +319,24 @@ function buildCard(text: string): Record<string, unknown> {
 }
 
 async function sendReply(chatId: string, text: string, replyTo?: string): Promise<string> {
-  // Use card format for Markdown support
-  const card = buildCard(text)
-  return sendLarkMessage(chatId, 'interactive', JSON.stringify(card), { replyToMessageId: replyTo })
+  // Detect if text is already valid card JSON; if so, send as-is
+  let cardJson: string
+  if (text.trimStart().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text)
+      if ((parsed.schema === '2.0' && Array.isArray(parsed.body?.elements))
+        || (parsed.config && parsed.header && Array.isArray(parsed.elements))) {
+        cardJson = text
+      } else {
+        cardJson = JSON.stringify(buildCard(text))
+      }
+    } catch {
+      cardJson = JSON.stringify(buildCard(text))
+    }
+  } else {
+    cardJson = JSON.stringify(buildCard(text))
+  }
+  return sendLarkMessage(chatId, 'interactive', cardJson, { replyToMessageId: replyTo })
 }
 
 async function addReaction(messageId: string, emojiType: string): Promise<string | null> {

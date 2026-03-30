@@ -38,6 +38,7 @@ export function loadConfig(): AppConfig {
       bin: parsed.claude?.bin ?? 'claude',
       pluginChannel: parsed.claude?.pluginChannel ?? 'plugin:lark-customized@local-channels',
       systemPrompt: parsed.claude?.systemPrompt,
+      model: parsed.claude?.model,
     },
     log: {
       level: parsed.log?.level ?? 'info',

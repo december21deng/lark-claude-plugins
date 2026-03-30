@@ -131,10 +131,7 @@ function convKey(platform: string, chatId: string, threadId?: string): string {
   return threadId ? `${base}_thread_${threadId}` : base
 }
 
-function parseCommand(text: string): string | null {
-  const trimmed = text.trim()
-  if (!trimmed.startsWith('/')) return null
-  const cmd = trimmed.slice(1).split(/\s/)[0].toLowerCase()
-  if (['clear', 'new', 'status', 'help'].includes(cmd)) return cmd
+function parseCommand(_text: string): string | null {
+  // Disabled: all /xxx messages are passed to workers as regular messages
   return null
 }
