@@ -97,24 +97,32 @@ export class LarkApi {
         case 'interactive':
         default:
           finalMsgType = 'interactive'
-          // Auto-detect: if text is valid card JSON, pass through (auto-convert v1→v2)
+          // Auto-detect: if text is valid card JSON, pass through (auto-convert v1→v2, sanitize unsupported elements)
           if (text.trimStart().startsWith('{')) {
             try {
               const parsed = JSON.parse(text)
-              // v2.0 card: schema + body.elements — pass through as-is
+              // v2.0 card: schema + body.elements — sanitize then pass through
               if (parsed.schema === '2.0' && Array.isArray(parsed.body?.elements)) {
                 isCardJson = true
+                const { elements: sanitized, fixes } = sanitizeV2Elements(parsed.body.elements)
+                parsed.body.elements = sanitized
+                if (fixes.length) {
+                  log.info(TAG, `Sanitized card: ${fixes.join('; ')}`)
+                }
+                text = JSON.stringify(parsed)
               // v1 card: config + header + top-level elements — auto-convert to v2
               } else if (parsed.config && parsed.header && Array.isArray(parsed.elements)) {
                 isCardJson = true
+                const { elements: sanitized, fixes } = sanitizeV2Elements(parsed.elements)
                 const v2 = {
                   schema: '2.0',
                   config: parsed.config,
                   header: parsed.header,
-                  body: { elements: parsed.elements },
+                  body: { elements: sanitized },
                 }
                 text = JSON.stringify(v2)
-                log.info(TAG, 'Auto-converted v1 card to v2 format')
+                const allFixes = ['v1→v2 conversion', ...fixes]
+                log.info(TAG, `Sanitized card: ${allFixes.join('; ')}`)
               }
             } catch {}
           }
@@ -146,8 +154,9 @@ export class LarkApi {
       } catch (sendErr: any) {
         // If interactive card JSON failed, extract meaningful text and fallback
         if (finalMsgType === 'interactive' && isCardJson) {
-          log.warn(TAG, `Card JSON rejected by Lark API, falling back to extracted text: ${sendErr}`)
-          log.info(TAG, `Original card JSON (truncated): ${text.slice(0, 300)}`)
+          const errBody = sendErr?.response?.data ? JSON.stringify(sendErr.response.data) : 'no response body'
+          log.warn(TAG, `Card JSON rejected by Lark API (${errBody}), falling back to extracted text`)
+          log.info(TAG, `Original card JSON (first 1000 chars): ${text.slice(0, 1000)}`)
           const extracted = extractCardText(text)
           const fallback = JSON.stringify({
             schema: '2.0',
@@ -344,6 +353,59 @@ function resolveEmojiType(input: string): string {
     return ALIAS_MAP[input.toLowerCase()] ?? input
   }
   return input
+}
+
+// ── Card v2 sanitization ──
+
+/** Recursively fix elements that are unsupported in card JSON v2. */
+function sanitizeV2Elements(elements: any[]): { elements: any[]; fixes: string[] } {
+  const fixes: string[] = []
+  const result: any[] = []
+
+  for (const el of elements) {
+    // "note" is v1-only — convert to markdown
+    if (el.tag === 'note') {
+      const texts: string[] = []
+      for (const child of el.elements ?? []) {
+        if (child.content) texts.push(child.content)
+        if (child.text) texts.push(child.text)
+      }
+      if (texts.length) {
+        result.push({ tag: 'markdown', content: texts.join(' ') })
+      }
+      fixes.push('note→markdown')
+      continue
+    }
+
+    // "action" wrapper is v1-only — unwrap buttons to top level
+    if (el.tag === 'action' && Array.isArray(el.actions)) {
+      for (const action of el.actions) {
+        result.push(action)
+      }
+      fixes.push('action→unwrapped buttons')
+      continue
+    }
+
+    // Recursively sanitize nested elements (collapsible_panel, column_set, etc.)
+    if (Array.isArray(el.elements)) {
+      const nested = sanitizeV2Elements(el.elements)
+      el.elements = nested.elements
+      fixes.push(...nested.fixes)
+    }
+    if (Array.isArray(el.columns)) {
+      for (const col of el.columns) {
+        if (Array.isArray(col.elements)) {
+          const nested = sanitizeV2Elements(col.elements)
+          col.elements = nested.elements
+          fixes.push(...nested.fixes)
+        }
+      }
+    }
+
+    result.push(el)
+  }
+
+  return { elements: result, fixes }
 }
 
 // ── Card text extraction helper ──
