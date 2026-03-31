@@ -39,6 +39,7 @@ export interface Gateway {
   start(onMessage: (msg: ParsedMessage) => void): Promise<void>
   stop(): Promise<void>
   sendMessage(chatId: string, text: string, opts?: SendOpts): Promise<void>
+  sendCard(chatId: string, card: Record<string, unknown>, opts?: SendOpts): Promise<void>
   sendImage(chatId: string, imageKey: string, opts?: SendOpts): Promise<void>
   downloadImage(messageId: string, imageKey: string): Promise<Buffer>
   uploadImage(imagePath: string): Promise<string>
@@ -57,6 +58,15 @@ export interface Worker {
   startedAt: number
   ready: boolean
   pid: number | null
+  busy: boolean            // v4: true when actively processing a message
+  lastActivityAt: number   // v4: timestamp of last tool-call (heartbeat)
+}
+
+// v4: Pending message for when pool is exhausted
+export interface PendingMessage {
+  convKey: string
+  msg: ParsedMessage
+  queuedAt: number
 }
 
 // ── Tool call proxy ──
@@ -94,6 +104,7 @@ export interface PoolConfig {
   maxWorkers: number
   basePort: number
   daemonApiPort: number
+  staleTimeoutMs?: number  // v4: idle threshold before STALE (default: 30 min)
 }
 
 export interface ClaudeConfig {

@@ -1,6 +1,6 @@
 # Test Coverage — Feature & Test Case Matrix
 
-167 tests across 12 files. All passing.
+186 tests across 13 files. All passing.
 
 ```bash
 cd dispatcher && bun test
@@ -332,6 +332,58 @@ cd dispatcher && bun test
 
 ---
 
+## 9. Pool Eviction & Scheduling (`pool-eviction.test.ts`)
+
+### 9.1 Worker State Classification
+
+| Feature | Test Case | Status |
+|---------|-----------|--------|
+| All busy → ACTIVE | `all busy workers classified as ACTIVE` | ✅ |
+| Not busy → IDLE | `not-busy assigned worker classified as IDLE` | ✅ |
+| Idle > threshold → STALE | `idle worker past staleTimeout classified as STALE` | ✅ |
+| No convKey → EMPTY | `unassigned worker classified as EMPTY` | ✅ |
+
+### 9.2 Tiered Eviction
+
+| Feature | Test Case | Status |
+|---------|-----------|--------|
+| Evict STALE first | `evicts STALE worker before IDLE` | ✅ |
+| Evict IDLE when no STALE | `evicts IDLE worker (LRU) when no STALE` | ✅ |
+| Never evict ACTIVE | `never evicts ACTIVE (busy) worker` | ✅ |
+| All active → null | `returns null when all workers ACTIVE` | ✅ |
+| STALE LRU order | `among multiple STALE, evicts LRU` | ✅ |
+| IDLE LRU order | `among multiple IDLE, evicts LRU` | ✅ |
+
+### 9.3 markBusy / markIdle
+
+| Feature | Test Case | Status |
+|---------|-----------|--------|
+| markBusy sets flag | `markBusy sets worker busy=true` | ✅ |
+| markIdle clears flag | `markIdle sets worker busy=false` | ✅ |
+| markIdle updates lastActivityAt | `markIdle updates lastActivityAt` | ✅ |
+| markBusy unknown convKey no-op | `markBusy on unknown convKey is no-op` | ✅ |
+| markIdle unknown convKey no-op | `markIdle on unknown convKey is no-op` | ✅ |
+
+### 9.4 Pending Message Queue
+
+| Feature | Test Case | Status |
+|---------|-----------|--------|
+| Queue on pool exhausted | `message queued when all workers ACTIVE` | ✅ |
+| Drain on idle | `pending message drained when worker becomes idle` | ✅ |
+| FIFO order | `pending queue processes in FIFO order` | ✅ |
+| Max capacity (50) | `queue drops oldest when exceeding max capacity` | ✅ |
+| Empty queue no-op | `drain on empty queue is no-op` | ✅ |
+| Multiple drains | `multiple idle events drain multiple queued messages` | ✅ |
+
+### 9.5 Tool-Call Heartbeat
+
+| Feature | Test Case | Status |
+|---------|-----------|--------|
+| Any tool-call updates timestamp | `any tool-call updates lastActivityAt` | ✅ |
+| Reply tool-call marks idle | `reply tool-call marks worker idle and updates timestamp` | ✅ |
+
+---
+
 ## Summary
 
 | Module | Tests | File |
@@ -348,4 +400,5 @@ cd dispatcher && bun test
 | Dedup | 5 | `dedup.test.ts` |
 | Router | 16 | `router.test.ts` |
 | Session store | 6 | `session-store.test.ts` |
-| **Total** | **167** | **12 files** |
+| Pool eviction & scheduling | 19 | `pool-eviction.test.ts` |
+| **Total** | **186** | **13 files** |

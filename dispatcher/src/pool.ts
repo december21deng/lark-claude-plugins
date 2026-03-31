@@ -1,7 +1,7 @@
 import { execSync, spawnSync } from 'child_process'
 import { randomUUID } from 'crypto'
 import { homedir } from 'os'
-import type { Worker, PoolConfig, ClaudeConfig } from './types.js'
+import type { Worker, PoolConfig, ClaudeConfig, PendingMessage, ParsedMessage } from './types.js'
 import { SessionStore } from './session-store.js'
 import { log } from './utils/logger.js'
 
@@ -9,6 +9,8 @@ const TAG = 'pool'
 const TMUX_PREFIX = 'lark-worker'
 const STARTUP_TIMEOUT_MS = 5 * 60 * 1000  // 5 minutes per worker
 const MAX_RETRIES = 3
+const DEFAULT_STALE_TIMEOUT_MS = 30 * 60 * 1000  // 30 minutes
+const MAX_PENDING_QUEUE = 50
 
 export class WorkerPool {
   private _workers: Worker[]
@@ -16,12 +18,16 @@ export class WorkerPool {
   private _lastUsed = new Map<string, number>()
   private _sessions: SessionStore
   private _startingInBackground = false
+  private _staleTimeoutMs: number
+  private _pendingQueue: PendingMessage[] = []
+  private _onDrainPending?: (msg: PendingMessage) => void
 
   constructor(
     private _poolConfig: PoolConfig,
     private _claudeConfig: ClaudeConfig,
   ) {
     this._sessions = new SessionStore()
+    this._staleTimeoutMs = _poolConfig.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS
 
     this._workers = Array.from({ length: _poolConfig.maxWorkers }, (_, i) => ({
       proc: null,
@@ -31,6 +37,8 @@ export class WorkerPool {
       startedAt: 0,
       ready: false,
       pid: null,
+      busy: false,
+      lastActivityAt: 0,
     }))
 
     log.info(TAG, `Pool initialized: ${_poolConfig.maxWorkers} workers, ports ${_poolConfig.basePort}-${_poolConfig.basePort + _poolConfig.maxWorkers - 1}`)
@@ -161,8 +169,8 @@ export class WorkerPool {
     }
   }
 
-  /** Get or assign a worker for a conversation. */
-  async getWorker(convKey: string): Promise<Worker> {
+  /** Get or assign a worker for a conversation. Returns null if pool exhausted (all workers ACTIVE). */
+  async getWorker(convKey: string): Promise<Worker | null> {
     // 1. Already assigned → reuse (with health check)
     const existingIdx = this._assignments.get(convKey)
     if (existingIdx !== undefined) {
@@ -201,8 +209,8 @@ export class WorkerPool {
       return this._workers[i]
     }
 
-    // 4. Pool full → evict oldest, restart with new session
-    const victimKey = this._findOldestUsedKey()
+    // 4. Pool full → tiered eviction (v4: never evict ACTIVE workers)
+    const victimKey = this._findEvictCandidate()
     if (victimKey) {
       const victimIdx = this._assignments.get(victimKey)!
       log.info(TAG, `Evicting worker[${victimIdx}] (${victimKey}) for ${convKey}`)
@@ -213,13 +221,16 @@ export class WorkerPool {
         this._sessions.set(victimKey, victimWorker.sessionId)
       }
       this._assignments.delete(victimKey)
+      victimWorker.busy = false
 
       const savedSession = this._sessions.get(convKey)
       await this._assignAndStart(victimIdx, convKey, savedSession)
       return this._workers[victimIdx]
     }
 
-    throw new Error('No workers available')
+    // 5. All workers ACTIVE → pool exhausted, return null (caller should queue)
+    log.warn(TAG, `Pool exhausted: all ${this._workers.length} workers ACTIVE, cannot assign ${convKey}`)
+    return null
   }
 
   /** Restart a worker with session management and assign to convKey. */
@@ -248,6 +259,67 @@ export class WorkerPool {
     // Persist session immediately
     if (w.sessionId) {
       this._sessions.set(convKey, w.sessionId)
+    }
+  }
+
+  // ── v4: Activity-aware scheduling ──
+
+  /** Mark a worker as busy (processing a message). Called by router after forwarding. */
+  markBusy(convKey: string): void {
+    const idx = this._assignments.get(convKey)
+    if (idx === undefined) return
+    this._workers[idx].busy = true
+    this._workers[idx].lastActivityAt = Date.now()
+    log.info(TAG, `markBusy: worker[${idx}] for ${convKey}`)
+  }
+
+  /** Mark a worker as idle (finished processing). Called by daemon on reply/error tool-call. */
+  markIdle(convKey: string): void {
+    const idx = this._assignments.get(convKey)
+    if (idx === undefined) return
+    this._workers[idx].busy = false
+    this._workers[idx].lastActivityAt = Date.now()
+    log.info(TAG, `markIdle: worker[${idx}] for ${convKey}`)
+
+    // Drain pending queue
+    this._drainPending()
+  }
+
+  /** Update heartbeat timestamp on any tool-call from a worker. */
+  heartbeat(convKey: string): void {
+    const idx = this._assignments.get(convKey)
+    if (idx === undefined) return
+    this._workers[idx].lastActivityAt = Date.now()
+  }
+
+  /** Queue a message when pool is exhausted. Returns queue position. */
+  enqueuePending(msg: ParsedMessage, convKey: string): number {
+    if (this._pendingQueue.length >= MAX_PENDING_QUEUE) {
+      const dropped = this._pendingQueue.shift()
+      log.warn(TAG, `Pending queue full, dropped oldest: ${dropped?.convKey}`)
+    }
+    this._pendingQueue.push({ convKey, msg, queuedAt: Date.now() })
+    const pos = this._pendingQueue.length
+    log.info(TAG, `Queued message for ${convKey} (position ${pos}/${MAX_PENDING_QUEUE})`)
+    return pos
+  }
+
+  /** Set callback for draining pending messages. Called by router on init. */
+  setDrainCallback(fn: (msg: PendingMessage) => void): void {
+    this._onDrainPending = fn
+  }
+
+  /** Get pending queue length (for status display). */
+  get pendingCount(): number {
+    return this._pendingQueue.length
+  }
+
+  private _drainPending(): void {
+    if (!this._pendingQueue.length || !this._onDrainPending) return
+    const pending = this._pendingQueue.shift()
+    if (pending) {
+      log.info(TAG, `Draining pending: ${pending.convKey} (queued ${((Date.now() - pending.queuedAt) / 1000).toFixed(0)}s ago)`)
+      this._onDrainPending(pending)
     }
   }
 
@@ -282,21 +354,29 @@ export class WorkerPool {
 
   /** Get pool status. */
   status(): string {
+    const now = Date.now()
     const readyCount = this._workers.filter(w => w.ready).length
-    const lines: string[] = [`Workers: ${readyCount}/${this._workers.length} ready${this._startingInBackground ? ' (starting...)' : ''}`]
+    const busyCount = this._workers.filter(w => w.busy).length
+    const lines: string[] = [
+      `Workers: ${readyCount}/${this._workers.length} ready, ${busyCount} busy${this._startingInBackground ? ' (starting...)' : ''}`,
+    ]
     for (let i = 0; i < this._workers.length; i++) {
       const w = this._workers[i]
       const alive = this._isTmuxAlive(i) ? '●' : '○'
       const status = w.ready ? '' : ' [starting]'
       if (w.convKey) {
         const lastUsed = this._lastUsed.get(w.convKey)
-        const idle = lastUsed ? Math.round((Date.now() - lastUsed) / 1000) : 0
-        lines.push(`  ${alive} [${i}] :${w.port} → ${w.convKey} (idle ${idle}s)${status}`)
+        const idle = lastUsed ? Math.round((now - lastUsed) / 1000) : 0
+        const state = w.busy ? 'BUSY' : ((now - w.lastActivityAt) > this._staleTimeoutMs ? 'STALE' : 'IDLE')
+        lines.push(`  ${alive} [${i}] :${w.port} → ${w.convKey} [${state}] (idle ${idle}s)${status}`)
       } else {
         lines.push(`  ${alive} [${i}] :${w.port} → (available)${status}`)
       }
     }
     lines.push(`Sessions stored: ${this._sessions['_sessions'].size}`)
+    if (this._pendingQueue.length > 0) {
+      lines.push(`Pending queue: ${this._pendingQueue.length} messages`)
+    }
     return lines.join('\n')
   }
 
@@ -391,16 +471,48 @@ export class WorkerPool {
     return false
   }
 
-  private _findOldestUsedKey(): string | null {
-    let oldest = ''
-    let oldestTs = Infinity
+  /** v4: Tiered eviction — STALE first, then IDLE, never ACTIVE. */
+  private _findEvictCandidate(): string | null {
+    const now = Date.now()
+
+    // Phase 1: Find STALE worker (idle > staleTimeoutMs, LRU among stale)
+    let candidate = ''
+    let candidateTs = Infinity
     for (const [key, ts] of this._lastUsed) {
-      if (this._assignments.has(key) && ts < oldestTs) {
-        oldest = key
-        oldestTs = ts
+      if (!this._assignments.has(key)) continue
+      const idx = this._assignments.get(key)!
+      const w = this._workers[idx]
+      if (w.busy) continue // skip ACTIVE
+      if ((now - w.lastActivityAt) > this._staleTimeoutMs && ts < candidateTs) {
+        candidate = key
+        candidateTs = ts
       }
     }
-    return oldest || null
+    if (candidate) {
+      log.info(TAG, `Evict candidate (STALE): ${candidate}`)
+      return candidate
+    }
+
+    // Phase 2: Find IDLE worker (not busy, LRU)
+    candidate = ''
+    candidateTs = Infinity
+    for (const [key, ts] of this._lastUsed) {
+      if (!this._assignments.has(key)) continue
+      const idx = this._assignments.get(key)!
+      if (this._workers[idx].busy) continue // skip ACTIVE
+      if (ts < candidateTs) {
+        candidate = key
+        candidateTs = ts
+      }
+    }
+    if (candidate) {
+      log.info(TAG, `Evict candidate (IDLE): ${candidate}`)
+      return candidate
+    }
+
+    // Phase 3: All workers ACTIVE → no eviction possible
+    log.info(TAG, 'No evict candidate: all workers ACTIVE')
+    return null
   }
 
   private _sleep(ms: number): Promise<void> {

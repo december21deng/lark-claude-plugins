@@ -276,6 +276,73 @@ export class LarkApi {
     }
   }
 
+  // ── Structured card object (from tool_use `card` param) ──
+
+  /**
+   * Send a card from a structured object. The caller (daemon.ts) passes
+   * the card object directly from Claude's tool_use input — serialization
+   * happens here via JSON.stringify, so string values are guaranteed to be
+   * properly escaped. This bypasses the text-based auto-detect path entirely.
+   *
+   * Sanitization (v1→v2 conversion, note/action removal) still runs.
+   */
+  async sendCardObject(
+    chatId: string,
+    card: Record<string, unknown>,
+    opts?: { replyToMessageId?: string },
+  ): Promise<void> {
+    try {
+      // Ensure v2 structure
+      if (!card.schema) card.schema = '2.0'
+
+      // Sanitize elements
+      const elements = (card as any).body?.elements
+      if (Array.isArray(elements)) {
+        const { elements: sanitized, fixes } = sanitizeV2Elements(elements)
+        ;(card as any).body.elements = sanitized
+        if (fixes.length) {
+          log.info(TAG, `sendCardObject sanitized: ${fixes.join('; ')}`)
+        }
+      }
+
+      const content = JSON.stringify(card)
+
+      const sendOnce = async (type: string, body: string) => {
+        if (opts?.replyToMessageId) {
+          await (this._client as any).im.message.reply({
+            path: { message_id: opts.replyToMessageId },
+            data: { msg_type: type, content: body },
+          })
+        } else {
+          await (this._client as any).im.message.create({
+            params: { receive_id_type: 'chat_id' },
+            data: { receive_id: chatId, msg_type: type, content: body },
+          })
+        }
+      }
+
+      try {
+        await sendOnce('interactive', content)
+      } catch (sendErr: any) {
+        // Card rejected by Lark API — fallback to extracted text as markdown card
+        const errBody = sendErr?.response?.data ? JSON.stringify(sendErr.response.data) : 'no response body'
+        log.warn(TAG, `sendCardObject rejected by Lark API (${errBody}), falling back to extracted text`)
+        const extracted = extractCardText(content)
+        const fallback = JSON.stringify({
+          schema: '2.0',
+          config: { wide_screen_mode: true },
+          body: { elements: [{ tag: 'markdown', content: extracted || '[卡片内容解析失败]' }] },
+        })
+        await sendOnce('interactive', fallback)
+      }
+
+      log.info(TAG, `sendCardObject to ${chatId}${opts?.replyToMessageId ? ` (reply to ${opts.replyToMessageId})` : ''}`)
+    } catch (e) {
+      log.error(TAG, `sendCardObject failed for ${chatId}: ${e}`)
+      throw e
+    }
+  }
+
   // ── Permission card ──
 
   /**

@@ -103,11 +103,41 @@ sessions.json:
 }
 ```
 
-### 2.4 Worker 生命周期
+### 2.4 Worker 状态与活跃感知调度（v4）
+
+每个 Worker 追踪其活动状态：
+
+| 状态 | 条件 | 可驱逐 |
+|------|------|--------|
+| ACTIVE | `busy === true` — 正在处理消息 | **永不** |
+| IDLE | `busy === false`，有 session | 是（LRU 顺序） |
+| STALE | IDLE + 空闲超过 `staleTimeoutMs` | 是（最高优先） |
+| EMPTY | `convKey === null` | 不适用（空槽位） |
+
+**Busy 生命周期：**
+```
+router.route() 转发 /message 给 worker   → pool.markBusy(convKey)
+daemon 收到 'reply' tool-call             → pool.markIdle(convKey)
+daemon 收到 tool-call 报错               → pool.markIdle(convKey)
+worker 发起任意 tool-call                 → 更新 lastActivityAt（心跳）
+```
+
+**驱逐优先级（v4 分级）：**
+1. 找 STALE worker（空闲超过 staleTimeoutMs，STALE 中按 LRU 排序）
+2. 找 IDLE worker（不忙，按 LRU 排序）
+3. 所有 worker 均 ACTIVE → 池已耗尽，消息排队
+
+**消息队列（池耗尽时）：**
+- 消息推入 `_pendingQueue`（FIFO，最多 50 条）
+- 通知用户："所有助手正忙，已加入队列"
+- 任一 worker 变空闲（`markIdle`）时自动取出排队消息处理
+- 队列溢出时丢弃最旧消息
+
+### 2.5 Worker 生命周期
 
 ```
 Daemon 启动
-  -> 创建 10 个 tmux session，每个运行 Claude CLI
+  -> 创建 N 个 tmux session，每个运行 Claude CLI
   -> 自动确认 development channels 提示
   -> health check 通过后标记 ready
 
@@ -115,7 +145,15 @@ Daemon 启动
   -> 计算 convKey
   -> 已分配 worker -> health check -> 健康则复用，不健康则重启
   -> 无分配 -> 找空闲 worker -> 分配
-  -> 池满 -> 驱逐最久未用 -> kill tmux -> 新建 tmux --resume -> 分配
+  -> 池满 -> 分级驱逐：
+     1. 驱逐 STALE（空闲超时）
+     2. 驱逐 IDLE（LRU）
+     3. 全部 ACTIVE -> 排队消息，通知用户
+  -> 转发后 markBusy(convKey)
+
+Worker 完成（reply tool-call）
+  -> markIdle(convKey)
+  -> 检查待处理队列 -> 有则取出处理
 
 驱逐
   -> 保存被驱逐对话的 sessionId
@@ -123,7 +161,7 @@ Daemon 启动
   -> 创建新 tmux session（带新对话的 --resume）
 
 被驱逐对话回来
-  -> 再次驱逐最久未用
+  -> 再次分级驱逐
   -> --resume 恢复完整上下文
 
 Daemon 关闭
@@ -131,7 +169,7 @@ Daemon 关闭
   -> kill 所有 tmux session
 ```
 
-### 2.5 Emoji 反应（v3 状态机）
+### 2.6 Emoji 反应（v3 状态机）
 
 | 时机 | Emoji | 行为 |
 |------|-------|------|
@@ -290,28 +328,38 @@ lark-claude-plugins/
 → 返回结果给 Claude → Claude 回复管理员
 ```
 
-### 4.4 Worker 分配与驱逐示例
+### 4.4 Worker 分配与驱逐示例（v4 — 活跃感知）
 
 ```
 10 个 worker，12 个 thread 的场景：
 
-10:00  thread_A -> worker-0 (新 session)
-10:01  thread_B -> worker-1 (新 session)
+10:00  thread_A -> worker-0 (新 session, 标记 BUSY)
+10:01  thread_B -> worker-1 (新 session, 标记 BUSY)
  ...
-10:09  thread_J -> worker-9 (新 session)
+10:09  thread_J -> worker-9 (新 session, 标记 BUSY)
+
+10:05  worker-0 发送回复 -> thread_A 标记 IDLE
 
 10:10  thread_K 来了，池满！
-       -> thread_A 最久没用(10:00)
+       -> thread_A 是 IDLE（从 10:05 开始）→ 驱逐
+       -> thread_C 还在 BUSY → 跳过（永不驱逐活跃 worker）
        -> 保存 sessions["thread_A"] = "session-aaa"
        -> kill tmux lark-worker-0
        -> 新建 lark-worker-0，无 --resume（新对话）
-       -> thread_K 分配到 worker-0
+       -> thread_K 分配到 worker-0，标记 BUSY
 
-10:30  thread_A 回来了
-       -> thread_B 最久没用(10:01)
-       -> 保存 sessions["thread_B"] = "session-bbb"
-       -> kill tmux lark-worker-1
-       -> 新建 lark-worker-1 --resume session-aaa
+10:20  thread_L 来了，所有 worker 都 BUSY！
+       -> 没有 STALE 或 IDLE worker 可驱逐
+       -> thread_L 进入等待队列，通知用户"所有助手正忙"
+
+10:21  worker-3 发送回复 -> thread_D 标记 IDLE
+       -> 取出等待队列：thread_L 分配到 worker-3
+
+10:50  thread_A 回来了
+       -> thread_D 已 STALE（从 10:21 空闲至今，超过 30 分钟阈值）
+       -> 保存 sessions["thread_D"] = "session-ddd"
+       -> kill tmux lark-worker-3
+       -> 新建 lark-worker-3 --resume session-aaa
        -> thread_A 恢复完整上下文！
 ```
 
@@ -388,8 +436,15 @@ bun run src/index.ts stop
 - [x] 卡片修复与 mention 解析
 
 ### Phase 4: 测试 -- 已完成
-- [x] 117 个单元测试，覆盖 9 个文件（mutex、dedup、router、session-store、receiver、reaction-tracker、admin、emoji-resolve、reply-threading）
+- [x] 167 个单元测试，覆盖 12 个文件
 - [x] 全部测试通过（`cd dispatcher && bun test`）
+
+### Phase 5: 智能调度 -- 已完成
+- [x] 活跃感知的 Worker 状态（ACTIVE/IDLE/STALE）
+- [x] 分级驱逐：STALE > IDLE > 永不驱逐 ACTIVE
+- [x] 池满时消息等待队列
+- [x] Worker 空闲时自动取出排队消息
+- [x] 通过 router（markBusy）和 daemon（markIdle）追踪忙闲状态
 
 ## 8. 风险与缓解
 
@@ -403,3 +458,6 @@ bun run src/index.ts stop
 | 10 个 worker 内存占用 | Claude CLI 空闲时 CPU=0，内存约 200MB/个 |
 | 权限卡片超时 | 2 分钟期限，超时自动拒绝 |
 | Worker 无人值守时被交互确认阻塞 | System prompt 禁止交互操作 |
+| 活跃 Worker 被驱逐导致任务丢失 | v4：活跃感知驱逐永不驱逐 ACTIVE worker |
+| 池满（所有 Worker 都忙） | v4：消息等待队列 + 自动取出 + 用户通知 |
+| 闲置 session 长期占用 Worker | v4：STALE 超时（30 分钟）优先驱逐空闲 Worker |

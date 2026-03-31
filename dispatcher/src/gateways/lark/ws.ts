@@ -137,6 +137,10 @@ export class LarkGateway implements Gateway {
     await this._api.sendMessage(chatId, text, opts)
   }
 
+  async sendCard(chatId: string, card: Record<string, unknown>, opts?: SendOpts): Promise<void> {
+    await this._api.sendCardObject(chatId, card, { replyToMessageId: opts?.replyToMessageId })
+  }
+
   async addReaction(chatId: string, messageId: string, emoji: string): Promise<string | null> {
     return await this._api.addReaction(chatId, messageId, emoji)
   }

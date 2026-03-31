@@ -174,7 +174,9 @@ tail -f ~/.lark-dispatcher/logs/$(date +%Y-%m-%d).log
 - **Group thread** -> each thread gets its own worker
 - **Group (no thread)** -> the whole group shares one worker
 - Up to N parallel conversations (configure `maxWorkers`)
-- When pool is full, least recently used conversation is evicted (context restored via `--resume`)
+- **Activity-aware eviction (v4)**: never evicts workers actively processing a task
+- When pool is full: STALE (idle >30min) evicted first, then IDLE (LRU), ACTIVE workers protected
+- If all workers busy: message queued automatically, processed when a worker becomes available
 
 ### Access Control
 
@@ -207,13 +209,14 @@ Clay, Gmail, Google Calendar, Context7, and all MCPs connected in Claude Desktop
 
 ## Testing
 
-117 unit tests covering mutex, dedup, router, session-store, receiver, reaction-tracker, admin, emoji-resolve, and reply-threading:
+Unit tests covering all core modules:
 
 ```bash
 cd dispatcher && bun test
 ```
 
 All tests pass. Test files are in `dispatcher/tests/`, including:
+- `pool-eviction.test.ts` — activity-aware eviction, tiered scheduling, pending queue
 - `reaction-tracker.test.ts`, `admin.test.ts`, `emoji-resolve.test.ts`, `reply-threading.test.ts`
 
 ## Configuration Reference (Dispatcher)

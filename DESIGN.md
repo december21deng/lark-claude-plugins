@@ -104,11 +104,41 @@ sessions.json:
 }
 ```
 
-### 2.4 Worker Lifecycle
+### 2.4 Worker States & Activity-Aware Scheduling (v4)
+
+Each worker tracks its activity state:
+
+| State | Condition | Evictable |
+|-------|-----------|-----------|
+| ACTIVE | `busy === true` — processing a message | **Never** |
+| IDLE | `busy === false`, has session | Yes (LRU order) |
+| STALE | IDLE + idle > `staleTimeoutMs` | Yes (highest priority) |
+| EMPTY | `convKey === null` | N/A (free slot) |
+
+**Busy lifecycle:**
+```
+router.route() posts /message to worker   → pool.markBusy(convKey)
+daemon receives 'reply' tool-call          → pool.markIdle(convKey)
+daemon receives error on tool-call         → pool.markIdle(convKey)
+any tool-call from worker                  → updates lastActivityAt (heartbeat)
+```
+
+**Eviction priority (v4 tiered):**
+1. Find STALE worker (idle > staleTimeoutMs, LRU among stale)
+2. Find IDLE worker (not busy, LRU among idle)
+3. All workers ACTIVE → pool exhausted, message queued
+
+**Message queue (when pool exhausted):**
+- Message pushed to `_pendingQueue` (FIFO, max 50)
+- User notified: "All workers busy, queued"
+- When any worker becomes idle (`markIdle`), drains one pending message
+- Oldest messages dropped if queue overflows
+
+### 2.5 Worker Lifecycle
 
 ```
 Daemon startup
-  -> Create 10 tmux sessions, each running Claude CLI
+  -> Create N tmux sessions, each running Claude CLI
   -> Auto-confirm development channels prompt
   -> Mark ready after health check passes
 
@@ -116,7 +146,15 @@ Message arrives
   -> Compute convKey
   -> Already assigned worker -> health check -> healthy = reuse, unhealthy = restart
   -> No assignment -> find idle worker -> assign
-  -> Pool full -> evict LRU -> kill tmux -> rebuild --resume -> assign
+  -> Pool full -> tiered eviction:
+     1. Evict STALE (idle > staleTimeoutMs)
+     2. Evict IDLE (LRU)
+     3. All ACTIVE -> queue message, notify user
+  -> markBusy(convKey) after forwarding
+
+Worker finishes (reply tool-call)
+  -> markIdle(convKey)
+  -> Check pending queue -> drain if any
 
 Eviction
   -> Save evicted conversation's sessionId
@@ -124,7 +162,7 @@ Eviction
   -> Create new tmux session (with new conversation's --resume)
 
 Evicted conversation returns
-  -> Evict LRU again
+  -> Evict again (tiered)
   -> --resume restores full context
 
 Daemon shutdown
@@ -132,7 +170,7 @@ Daemon shutdown
   -> Kill all tmux sessions
 ```
 
-### 2.5 Emoji Reactions (v3 State Machine)
+### 2.6 Emoji Reactions (v3 State Machine)
 
 | Timing | Emoji | Behavior |
 |--------|-------|----------|
@@ -291,28 +329,38 @@ Admin sends DM to bot (natural language, e.g. "add snow to sales group")
 → Returns result to Claude → Claude replies to admin
 ```
 
-### 4.4 Worker Assignment and Eviction Example
+### 4.4 Worker Assignment and Eviction Example (v4 — Activity-Aware)
 
 ```
 10 workers, 12 threads scenario:
 
-10:00  thread_A -> worker-0 (new session)
-10:01  thread_B -> worker-1 (new session)
+10:00  thread_A -> worker-0 (new session, marked BUSY)
+10:01  thread_B -> worker-1 (new session, marked BUSY)
  ...
-10:09  thread_J -> worker-9 (new session)
+10:09  thread_J -> worker-9 (new session, marked BUSY)
+
+10:05  worker-0 sends reply -> thread_A marked IDLE
 
 10:10  thread_K arrives, pool full!
-       -> thread_A is LRU (10:00)
+       -> thread_A is IDLE (since 10:05) → EVICT
+       -> thread_C is still BUSY → SKIP (never evict active workers)
        -> save sessions["thread_A"] = "session-aaa"
        -> kill tmux lark-worker-0
        -> create lark-worker-0, no --resume (new conversation)
-       -> thread_K assigned to worker-0
+       -> thread_K assigned to worker-0, marked BUSY
 
-10:30  thread_A comes back
-       -> thread_B is LRU (10:01)
-       -> save sessions["thread_B"] = "session-bbb"
-       -> kill tmux lark-worker-1
-       -> create lark-worker-1 --resume session-aaa
+10:20  thread_L arrives, ALL workers BUSY!
+       -> no STALE or IDLE workers to evict
+       -> thread_L queued, user notified "all workers busy"
+
+10:21  worker-3 sends reply -> thread_D marked IDLE
+       -> pending queue drained: thread_L assigned to worker-3
+
+10:50  thread_A comes back
+       -> thread_D STALE (idle since 10:21, >30 min threshold)
+       -> save sessions["thread_D"] = "session-ddd"
+       -> kill tmux lark-worker-3
+       -> create lark-worker-3 --resume session-aaa
        -> thread_A full context restored!
 ```
 
@@ -389,8 +437,15 @@ bun run src/index.ts stop
 - [x] Card fix and mention resolution
 
 ### Phase 4: Testing -- Complete
-- [x] 117 unit tests across 9 files (mutex, dedup, router, session-store, receiver, reaction-tracker, admin, emoji-resolve, reply-threading)
+- [x] 167 unit tests across 12 files
 - [x] All tests passing (`cd dispatcher && bun test`)
+
+### Phase 5: Smart Scheduling -- Complete
+- [x] Activity-aware worker states (ACTIVE/IDLE/STALE)
+- [x] Tiered eviction: STALE > IDLE > never evict ACTIVE workers
+- [x] Pending message queue when pool exhausted (all workers busy)
+- [x] Auto-drain queue when worker becomes idle
+- [x] Busy/idle tracking via router (markBusy) and daemon (markIdle)
 
 ## 8. Risks and Mitigations
 
@@ -404,3 +459,6 @@ bun run src/index.ts stop
 | 10 workers memory usage | Claude CLI idle: CPU=0, ~200MB/worker |
 | Permission card timeout | 2-minute deadline, auto-deny on expiration |
 | Unattended worker blocked by interactive confirm | System prompt forbids interactive operations |
+| Active worker evicted mid-task | v4: Activity-aware eviction never evicts ACTIVE workers |
+| Pool exhausted (all workers busy) | v4: Pending queue + auto-drain + user notification |
+| Stale sessions hogging workers | v4: STALE timeout (30min) prioritizes eviction of idle workers |

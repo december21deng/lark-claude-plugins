@@ -71,12 +71,16 @@ export async function startDaemon(config: AppConfig): Promise<void> {
 
           log.info(TAG, `tool-call: ${body.tool} platform=${body.platform} convKey=${body.convKey}`)
 
+          // v4: Heartbeat — any tool-call proves the worker is alive
+          pool.heartbeat(body.convKey)
+
           let resultText = ''
 
           switch (body.tool) {
             case 'reply': {
               const chatId = body.args.chat_id as string
-              const text = body.args.text as string
+              const text = body.args.text as string | undefined
+              const card = body.args.card as Record<string, unknown> | undefined
               const replyTo = body.args.reply_to as string | undefined
               const messageId = body.args.message_id as string | undefined
               const files = (body.args.files as string[] | undefined) ?? []
@@ -91,8 +95,15 @@ export async function startDaemon(config: AppConfig): Promise<void> {
                 log.warn(TAG, `No reply_to for ${body.convKey}, will create new message (may break thread)`)
               }
 
-              // Send message (api.ts handles card JSON auto-detect + fallback)
-              await gw.sendMessage(chatId, text, { replyToMessageId: replyToId, msgType })
+              if (card && typeof card === 'object') {
+                // Structured card object — gateway serializes it, guarantees valid JSON
+                // (eliminates double-encoding bugs from Claude hand-writing JSON strings)
+                if (!card.schema) card.schema = '2.0'
+                await gw.sendCard(chatId, card, { replyToMessageId: replyToId })
+              } else {
+                // Fallback: text string path (legacy, with auto-detect)
+                await gw.sendMessage(chatId, text ?? '', { replyToMessageId: replyToId, msgType })
+              }
 
               // Upload and send image files
               for (const filePath of files) {
@@ -113,6 +124,9 @@ export async function startDaemon(config: AppConfig): Promise<void> {
                 senderEntry.messageIds = [] // clear for next batch
               }
               log.info(TAG, `Reply sent to ${chatId}`)
+
+              // v4: Mark worker idle — reply means task is done
+              pool.markIdle(body.convKey)
 
               resultText = files.length
                 ? `Message sent successfully with ${files.length} image(s)`
@@ -230,6 +244,10 @@ export async function startDaemon(config: AppConfig): Promise<void> {
           })
         } catch (e) {
           log.error(TAG, `tool-call error: ${e}`)
+          // v4: Mark worker idle on error — task failed, worker is free
+          if (body?.convKey) {
+            pool.markIdle(body.convKey)
+          }
           // Emoji state: FACEPALM on ALL pending messages
           if (body?.convKey) {
             const info = senderMap.get(body.convKey)

@@ -1,4 +1,4 @@
-import type { ParsedMessage, Gateway } from './types.js'
+import type { ParsedMessage, Gateway, PendingMessage } from './types.js'
 import type { LarkGateway } from './gateways/lark/ws.js'
 import { Mutex } from './utils/mutex.js'
 import { WorkerPool } from './pool.js'
@@ -12,7 +12,13 @@ export class Router {
   constructor(
     private _pool: WorkerPool,
     private _gateways: Map<string, Gateway>,
-  ) {}
+  ) {
+    // v4: Set up drain callback for pending queue
+    this._pool.setDrainCallback((pending: PendingMessage) => {
+      log.info(TAG, `Draining pending message for ${pending.convKey}`)
+      this.route(pending.msg).catch(e => log.error(TAG, `Drain route error: ${e}`))
+    })
+  }
 
   async route(msg: ParsedMessage): Promise<void> {
     const key = convKey(msg.platform, msg.chatId, msg.threadId)
@@ -29,6 +35,21 @@ export class Router {
 
       // Get worker
       const worker = await this._pool.getWorker(key)
+
+      // v4: Pool exhausted — all workers busy, queue message
+      if (!worker) {
+        const pos = this._pool.enqueuePending(msg, key)
+        log.info(TAG, `Pool exhausted, queued ${key} at position ${pos}`)
+
+        // Notify user
+        const gw = this._gateways.get(msg.platform)
+        if (gw) {
+          await gw.sendMessage(msg.chatId, `⏳ 所有助手正忙，你的消息已排队（第 ${pos} 位），空闲后会自动处理。`, {
+            replyToMessageId: msg.messageId,
+          }).catch(e => log.error(TAG, `Failed to send queue notification: ${e}`))
+        }
+        return
+      }
 
       // Emoji state: OnIt — worker assigned
       const tracker = this._getTracker(msg.platform)
@@ -61,6 +82,9 @@ export class Router {
       if (!resp.ok) {
         log.error(TAG, `Forward failed: ${resp.status} ${await resp.text()}`)
       }
+
+      // v4: Mark worker as busy after successful forwarding
+      this._pool.markBusy(key)
     } catch (e) {
       log.error(TAG, `Route error for ${key}: ${e}`)
       // Emoji state: Facepalm — routing error
