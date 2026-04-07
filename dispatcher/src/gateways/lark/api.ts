@@ -139,7 +139,7 @@ export class LarkApi {
         if (opts?.replyToMessageId) {
           await (this._client as any).im.message.reply({
             path: { message_id: opts.replyToMessageId },
-            data: { msg_type: type, content: body },
+            data: { msg_type: type, content: body, ...(opts?.threadId ? { reply_in_thread: true } : {}) },
           })
         } else {
           await (this._client as any).im.message.create({
@@ -327,7 +327,7 @@ export class LarkApi {
       if (opts?.replyToMessageId) {
         await (this._client as any).im.message.reply({
           path: { message_id: opts.replyToMessageId },
-          data: { msg_type: 'image', content },
+          data: { msg_type: 'image', content, ...(opts?.threadId ? { reply_in_thread: true } : {}) },
         })
       } else {
         await (this._client as any).im.message.create({
@@ -356,7 +356,7 @@ export class LarkApi {
   async sendCardObject(
     chatId: string,
     card: Record<string, unknown>,
-    opts?: { replyToMessageId?: string },
+    opts?: { replyToMessageId?: string; threadId?: string },
   ): Promise<void> {
     try {
       // Ensure v2 structure
@@ -378,7 +378,7 @@ export class LarkApi {
         if (opts?.replyToMessageId) {
           await (this._client as any).im.message.reply({
             path: { message_id: opts.replyToMessageId },
-            data: { msg_type: type, content: body },
+            data: { msg_type: type, content: body, ...(opts?.threadId ? { reply_in_thread: true } : {}) },
           })
         } else {
           await (this._client as any).im.message.create({

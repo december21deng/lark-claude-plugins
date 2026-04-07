@@ -101,14 +101,18 @@ export async function startDaemon(config: AppConfig): Promise<void> {
                 log.warn(TAG, `No reply_to for ${body.convKey}, will create new message (may break thread)`)
               }
 
+              // Extract threadId from convKey (format: lark:chatId_thread_threadId)
+              const threadMatch = body.convKey.match(/_thread_(.+)$/)
+              const threadId = threadMatch ? threadMatch[1] : undefined
+
               if (card && typeof card === 'object') {
                 // Structured card object — gateway serializes it, guarantees valid JSON
                 // (eliminates double-encoding bugs from Claude hand-writing JSON strings)
                 if (!card.schema) card.schema = '2.0'
-                await gw.sendCard(chatId, card, { replyToMessageId: replyToId })
+                await gw.sendCard(chatId, card, { replyToMessageId: replyToId, threadId })
               } else {
                 // Fallback: text string path (legacy, with auto-detect)
-                await gw.sendMessage(chatId, text ?? '', { replyToMessageId: replyToId, msgType })
+                await gw.sendMessage(chatId, text ?? '', { replyToMessageId: replyToId, msgType, threadId })
               }
 
               // Upload and send image files
