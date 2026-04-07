@@ -1,5 +1,6 @@
 import type { ParsedMessage, Gateway, PendingMessage } from './types.js'
 import type { LarkGateway } from './gateways/lark/ws.js'
+import type { LarkApi } from './gateways/lark/api.js'
 import { Mutex } from './utils/mutex.js'
 import { WorkerPool } from './pool.js'
 import { log } from './utils/logger.js'
@@ -8,11 +9,15 @@ const TAG = 'router'
 
 export class Router {
   private _queues = new Map<string, Mutex>()
+  private _botOpenId?: string
 
   constructor(
     private _pool: WorkerPool,
     private _gateways: Map<string, Gateway>,
+    opts?: { botOpenId?: string },
   ) {
+    this._botOpenId = opts?.botOpenId
+
     // v4: Set up drain callback for pending queue
     this._pool.setDrainCallback((pending: PendingMessage) => {
       log.info(TAG, `Draining pending message for ${pending.convKey}`)
@@ -26,13 +31,6 @@ export class Router {
 
     await queue.acquire()
     try {
-      // Slash commands
-      const cmd = parseCommand(msg.text)
-      if (cmd) {
-        await this._execCommand(cmd, msg, key)
-        return
-      }
-
       // Get worker
       const worker = await this._pool.getWorker(key)
 
@@ -57,6 +55,21 @@ export class Router {
         await tracker.transition(msg.messageId, msg.chatId, 'OnIt')
       }
 
+      // v5: Fetch thread history if message has threadId
+      let content = msg.text
+      if (msg.threadId) {
+        try {
+          const historyXml = await this._fetchThreadHistory(msg)
+          if (historyXml) {
+            content = `${historyXml}\n\n${content}`
+            log.info(TAG, `Injected thread history for ${msg.threadId} (${historyXml.split('\n').length - 2} messages)`)
+          }
+        } catch (e) {
+          log.warn(TAG, `Failed to fetch thread history for ${msg.threadId}: ${e}`)
+          // Continue without history — still forward the current message
+        }
+      }
+
       // Forward message to plugin
       log.info(TAG, `Forwarding to :${worker.port} for ${key}`)
 
@@ -64,7 +77,7 @@ export class Router {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          content: msg.text,
+          content,
           platform: msg.platform,
           meta: {
             chat_id: msg.chatId,
@@ -97,6 +110,35 @@ export class Router {
     }
   }
 
+  // ── v5: Thread history ──
+
+  private async _fetchThreadHistory(msg: ParsedMessage): Promise<string> {
+    if (!msg.threadId) return ''
+
+    const gw = this._gateways.get(msg.platform)
+    if (!gw || !('api' in gw)) return ''
+
+    const api = (gw as LarkGateway).api as LarkApi
+    const messages = await api.fetchThreadMessages(msg.threadId, 50)
+
+    if (!messages.length) return ''
+
+    // Filter out current message and sort ascending
+    const history = messages
+      .filter(m => m.messageId !== msg.messageId)
+      .sort((a, b) => a.createTime - b.createTime)
+
+    if (!history.length) return ''
+
+    const lines = history.map(m => {
+      const time = formatTime(m.createTime)
+      const name = m.senderId === this._botOpenId ? 'bot' : m.senderName
+      return `[${time}] ${name}: ${m.text}`
+    })
+
+    return `<history thread_id="${msg.threadId}">\n${lines.join('\n')}\n</history>`
+  }
+
   // ── Private ──
 
   private _getTracker(platform: string) {
@@ -112,40 +154,6 @@ export class Router {
     }
     return q
   }
-
-  private async _execCommand(cmd: string, msg: ParsedMessage, convKey: string): Promise<void> {
-    const gw = this._gateways.get(msg.platform)
-    if (!gw) return
-
-    let reply = ''
-
-    switch (cmd) {
-      case 'clear':
-      case 'new':
-        await this._pool.clearConversation(convKey)
-        reply = '✅ 对话已清除，下次消息将开始新对话。'
-        break
-
-      case 'status':
-        reply = this._pool.status()
-        break
-
-      case 'help':
-        reply = [
-          '可用命令：',
-          '/clear — 清除当前对话，重新开始',
-          '/new — 同 /clear',
-          '/status — 显示 worker 池状态',
-          '/help — 显示此帮助',
-        ].join('\n')
-        break
-
-      default:
-        reply = `未知命令: /${cmd}`
-    }
-
-    await gw.sendMessage(msg.chatId, reply)
-  }
 }
 
 // ── Helpers ──
@@ -155,7 +163,7 @@ function convKey(platform: string, chatId: string, threadId?: string): string {
   return threadId ? `${base}_thread_${threadId}` : base
 }
 
-function parseCommand(_text: string): string | null {
-  // Disabled: all /xxx messages are passed to workers as regular messages
-  return null
+function formatTime(ts: number): string {
+  const d = new Date(ts)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }

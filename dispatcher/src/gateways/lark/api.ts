@@ -219,6 +219,73 @@ export class LarkApi {
     }
   }
 
+  /** v5: Fetch thread messages for history injection. */
+  async fetchThreadMessages(threadId: string, limit: number = 50): Promise<Array<{
+    messageId: string
+    senderId: string
+    senderName: string
+    text: string
+    createTime: number
+    msgType: string
+  }>> {
+    try {
+      const res = await (this._client as any).im.message.list({
+        params: { container_id_type: 'thread', container_id: threadId, page_size: limit },
+      })
+      const items = res?.data?.items ?? []
+      return items.map((item: any) => {
+        const msgType = item.msg_type ?? 'text'
+        let text = ''
+        try {
+          const content = item.body?.content ?? '{}'
+          if (msgType === 'text') {
+            const parsed = JSON.parse(content)
+            text = parsed.text ?? ''
+          } else if (msgType === 'post') {
+            text = this._extractPostText(content)
+          } else if (msgType === 'interactive') {
+            text = extractCardText(content)
+          } else {
+            text = `[${msgType}]`
+          }
+        } catch {
+          text = '[消息解析失败]'
+        }
+
+        return {
+          messageId: item.message_id ?? '',
+          senderId: item.sender?.id ?? '',
+          senderName: item.sender?.id ?? '',
+          text,
+          createTime: Number(item.create_time ?? 0),
+          msgType,
+        }
+      })
+    } catch (e) {
+      log.error(TAG, `Failed to fetch thread messages for ${threadId}: ${e}`)
+      return []
+    }
+  }
+
+  /** Extract text from post (rich text) message content. */
+  private _extractPostText(content: string): string {
+    try {
+      const parsed = JSON.parse(content)
+      const parts: string[] = []
+      if (parsed.title) parts.push(parsed.title)
+      for (const para of parsed.content ?? []) {
+        for (const el of para) {
+          if (el.tag === 'text') parts.push(el.text ?? '')
+          else if (el.tag === 'a') parts.push(el.text ?? el.href ?? '')
+          else if (el.tag === 'at') parts.push(`@${el.user_name ?? el.user_id ?? ''}`)
+        }
+      }
+      return parts.join(' ').trim() || '[富文本消息]'
+    } catch {
+      return '[富文本消息]'
+    }
+  }
+
   // ── Image methods ──
 
   /** Download an image resource from a message */

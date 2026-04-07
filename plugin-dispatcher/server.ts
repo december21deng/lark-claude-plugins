@@ -445,7 +445,32 @@ const mcp = new Server(
   },
 )
 
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+// v5: MCP readiness tracking
+let _mcpReady = false
+const _pendingNotifications: Array<{ content: string; meta: Record<string, string> }> = []
+
+mcp.setRequestHandler(ListToolsRequestSchema, async () => {
+  // v5: Mark MCP as ready on first ListTools call (Claude Code always calls this during init)
+  if (!_mcpReady) {
+    _mcpReady = true
+    log(`MCP ready — flushing ${_pendingNotifications.length} buffered notifications`)
+
+    // Flush all buffered notifications
+    for (const pending of _pendingNotifications) {
+      try {
+        await mcp.notification({
+          method: 'notifications/claude/channel',
+          params: { content: pending.content, meta: pending.meta },
+        })
+        log(`Flushed buffered notification: "${pending.content.slice(0, 60)}"`)
+      } catch (e) {
+        log(`Failed to flush buffered notification: ${e}`)
+      }
+    }
+    _pendingNotifications.length = 0
+  }
+
+  return ({
   tools: [
     {
       name: 'reply',
@@ -554,7 +579,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     }] : []),
   ],
-}))
+})})
 
 // ── Dispatcher mode: proxy tool calls through daemon ──
 
@@ -703,7 +728,8 @@ if (DISPATCHER_PORT > 0) {
       const url = new URL(req.url)
 
       if (url.pathname === '/health' && req.method === 'GET') {
-        return Response.json({ ready: true })
+        // v5: Only report ready when MCP is actually ready (ListTools called)
+        return Response.json({ ready: _mcpReady })
       }
 
       if (url.pathname === '/message' && req.method === 'POST') {
@@ -721,14 +747,25 @@ if (DISPATCHER_PORT > 0) {
           _currentPlatform = body.platform ?? 'lark'
           _currentMessageId = body.meta.message_id ?? ''
 
-          // Push channel notification to Claude CLI
-          void mcp.notification({
-            method: 'notifications/claude/channel',
-            params: {
-              content: body.content,
-              meta: body.meta,
-            },
-          })
+          // v5: Buffer notification if MCP not ready, otherwise send immediately
+          if (!_mcpReady) {
+            _pendingNotifications.push({ content: body.content, meta: body.meta })
+            log(`MCP not ready, buffered notification (${_pendingNotifications.length} pending)`)
+            return Response.json({ ok: true, buffered: true })
+          }
+
+          // Push channel notification to Claude CLI (await to catch errors)
+          try {
+            await mcp.notification({
+              method: 'notifications/claude/channel',
+              params: {
+                content: body.content,
+                meta: body.meta,
+              },
+            })
+          } catch (e) {
+            log(`notification error: ${e}`)
+          }
 
           return Response.json({ ok: true })
         } catch (e) {

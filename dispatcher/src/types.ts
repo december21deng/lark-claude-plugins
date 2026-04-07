@@ -54,12 +54,12 @@ export interface Worker {
   proc: any | null  // node-pty IPty instance
   port: number
   convKey: string | null
-  sessionId: string | null
   startedAt: number
   ready: boolean
   pid: number | null
-  busy: boolean            // v4: true when actively processing a message
-  lastActivityAt: number   // v4: timestamp of last tool-call (heartbeat)
+  busy: boolean            // v5: true when actively processing a message
+  lastActivityAt: number   // v5: timestamp of last tool-call (heartbeat)
+  idx: number              // v5: worker index in pool
 }
 
 // v4: Pending message for when pool is exhausted
@@ -101,10 +101,13 @@ export interface AccessConfig {
 }
 
 export interface PoolConfig {
-  maxWorkers: number
+  minWorkers: number        // v5: minimum always-alive workers (default: 10)
+  maxWorkers: number        // v5: maximum workers (dynamic spawn up to this)
   basePort: number
   daemonApiPort: number
-  staleTimeoutMs?: number  // v4: idle threshold before STALE (default: 30 min)
+  clearDelayMs?: number     // v5: IDLE → /clear delay (default: 60_000 = 1 min)
+  killDelayMs?: number      // v5: BARE → kill delay when > minWorkers (default: 300_000 = 5 min)
+  busyTimeoutMs?: number    // v5: BUSY timeout, force idle if no heartbeat (default: 600_000 = 10 min)
 }
 
 export interface ClaudeConfig {

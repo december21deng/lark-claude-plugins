@@ -40,8 +40,14 @@ export async function startDaemon(config: AppConfig): Promise<void> {
   // ── Sender tracking (convKey → sender info + pending message IDs for emoji batch) ──
   const senderMap = new Map<string, { senderId: string; chatId: string; chatType: 'private' | 'group'; messageIds: string[] }>()
 
+  // ── Fetch bot open_id for thread history formatting ──
+  const botOpenId = await larkGw.api.getBotOpenId()
+  if (botOpenId) {
+    log.info(TAG, `Bot open_id: ${botOpenId}`)
+  }
+
   // ── Init router ──
-  const router = new Router(pool, gateways)
+  const router = new Router(pool, gateways, { botOpenId })
 
   // ── Start daemon HTTP server (receives tool-call from plugins) ──
   const httpServer = Bun.serve({

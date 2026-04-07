@@ -30,9 +30,13 @@ export function loadConfig(): AppConfig {
       },
     },
     pool: {
-      maxWorkers: parsed.pool?.maxWorkers ?? 3,
+      minWorkers: parsed.pool?.minWorkers ?? 10,
+      maxWorkers: parsed.pool?.maxWorkers ?? 30,
       basePort: parsed.pool?.basePort ?? 7100,
       daemonApiPort: parsed.pool?.daemonApiPort ?? 8900,
+      clearDelayMs: parsed.pool?.clearDelayMs,
+      killDelayMs: parsed.pool?.killDelayMs,
+      busyTimeoutMs: parsed.pool?.busyTimeoutMs,
     },
     claude: {
       bin: parsed.claude?.bin ?? 'claude',
