@@ -434,6 +434,7 @@ export class WorkerPool {
       this._claudeConfig.bin,
       '--dangerously-load-development-channels', this._claudeConfig.pluginChannel,
       '--dangerously-skip-permissions',
+      '--disallowed-tools', 'mcp__lark-mcp__im.message.create,mcp__lark-mcp__im.message.reply,mcp__lark-mcp__im.v1.message.create,mcp__lark-mcp__im.v1.message.reply',
     ]
 
     if (this._claudeConfig.model) {
@@ -452,6 +453,7 @@ export class WorkerPool {
       '不确定飞书 API 是否支持某功能时，先用 Context7 查文档或使用相关 skill，禁止凭猜测回答"不支持"或"做不到"。',
       '所有飞书回复必须使用 /feishu-card skill 生成 v2 格式的交互卡片 JSON，禁止发送纯文本或 markdown。即使是简短回复，也必须包含 header（带颜色）和 body.elements。卡片 JSON 作为 reply 工具的 text 参数传入即可。',
       '如果消息中包含 <history> 标签，那是该话题的历史聊天记录，用于帮助你理解上下文。你只需要回复最新的消息（<history> 标签外的内容），不要回复历史消息。',
+      '禁止使用 lark-mcp 的任何工具发送或回复消息（如 im.message.create、im.message.reply），所有飞书消息必须且只能通过 reply 工具发送。lark-mcp 的其他工具（文档、表格、日历等）可以正常使用。',
     ].join(' ')
     const parts = [safetyRules]
     if (this._claudeConfig.systemPrompt) parts.push(this._claudeConfig.systemPrompt)
