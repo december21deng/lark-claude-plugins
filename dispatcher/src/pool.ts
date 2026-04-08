@@ -434,7 +434,23 @@ export class WorkerPool {
       this._claudeConfig.bin,
       '--dangerously-load-development-channels', this._claudeConfig.pluginChannel,
       '--dangerously-skip-permissions',
-      '--disallowed-tools', 'mcp__lark-mcp__im.message.create,mcp__lark-mcp__im.message.reply,mcp__lark-mcp__im.v1.message.create,mcp__lark-mcp__im.v1.message.reply',
+      '--disallowed-tools', [
+        // Block lark-mcp messaging tools (all possible naming conventions)
+        'mcp__lark-mcp__im.message.create',
+        'mcp__lark-mcp__im.message.reply',
+        'mcp__lark-mcp__im.v1.message.create',
+        'mcp__lark-mcp__im.v1.message.reply',
+        'mcp__lark-mcp__im_message_create',
+        'mcp__lark-mcp__im_message_reply',
+        'mcp__lark-mcp__im_v1_message_create',
+        'mcp__lark-mcp__im_v1_message_reply',
+        // Block feishu official plugin (duplicate of lark-customized, no reply_in_thread)
+        'mcp__plugin_feishu_feishu__reply',
+        'mcp__plugin_feishu_feishu__react',
+        'mcp__plugin_feishu_feishu__remove_reaction',
+        'mcp__plugin_feishu_feishu__fetch_messages',
+        'mcp__plugin_feishu_feishu__download_attachment',
+      ].join(','),
     ]
 
     if (this._claudeConfig.model) {

@@ -59,14 +59,22 @@ When sending `interactive` messages, if the text content is valid card JSON (con
 2. 如果有 tool-call 但仍创建新话题 → 检查 `api.ts` 的 `reply_in_thread` 参数是否正确传入
 3. **如果日志里完全没有 tool-call 记录但飞书上有回复** → Worker 绕过了 daemon，直接通过全局 lark-mcp 发送了消息
 
-**根因**: Worker 是 Claude Code CLI 进程，会继承 `~/.mcp.json` 中的全局 MCP 配置（包括 `lark-mcp`）。Worker 的 Claude 模型可能选择 `lark-mcp` 的 `im.message.create` 直接发消息，绕过 daemon 的 reply 路径。`im.message.create` 在话题群中 = 创建新话题。
+**根因（多条绕过路径）**:
+1. **lark-mcp（全局 MCP）**: Worker 继承 `~/.mcp.json` 或 `~/.claude.json` 中的 lark-mcp 配置，用 `im.message.create` 直接发消息。已从两个配置文件中移除。
+2. **feishu@claude-plugins-official（官方插件）**: 与 lark-customized 工具名重叠（都叫 `reply`），Worker 可能选择 feishu 插件的 reply 工具，直接调飞书 API 且没有 `reply_in_thread`。已从 `installed_plugins.json` 中移除。
+3. 共同特征：daemon 日志里**没有 tool-call 记录**但飞书上有回复 → Worker 绕过了 daemon。
 
 **防护措施（当前已实施）**:
-- `pool.ts` 中 `--disallowed-tools` 禁用 lark-mcp 的消息发送工具（`im.message.create`、`im.message.reply` 及其 v1 变体）
+- 移除 lark-mcp（从 `~/.mcp.json` 和 `~/.claude.json`）
+- 卸载 `feishu@claude-plugins-official` 插件（lark-customized 完全替代）
+- `pool.ts` 中 `--disallowed-tools` 禁用 lark-mcp 和 feishu 插件的消息发送工具（双重保险）
 - Worker system prompt 中明确禁止使用 lark-mcp 发送消息
-- 所有飞书消息必须通过 `reply` 工具 → daemon → `api.ts`（带 `reply_in_thread: true`）
+- 所有飞书消息必须通过 lark-customized 的 `reply` 工具 → daemon → `api.ts`（带 `reply_in_thread: true`）
 
-**如果问题复发**: 检查 `~/.mcp.json` 是否新增了其他能发飞书消息的 MCP server，并在 `--disallowed-tools` 中补充禁用。
+**如果问题复发**:
+1. 检查 daemon 日志有无 tool-call 记录（有 → api.ts 问题；无 → Worker 绕过 daemon）
+2. 检查 `~/.mcp.json`、`~/.claude.json`、`~/.claude/plugins/installed_plugins.json` 是否新增了能发飞书消息的 MCP server 或插件
+3. 在 `pool.ts` 的 `--disallowed-tools` 中补充禁用
 
 ## Project Structure
 
