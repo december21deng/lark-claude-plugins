@@ -119,7 +119,7 @@ export async function startDaemon(config: AppConfig): Promise<void> {
               for (const filePath of files) {
                 try {
                   const imageKey = await gw.uploadImage(filePath)
-                  await gw.sendImage(chatId, imageKey)
+                  await gw.sendImage(chatId, imageKey, { replyToMessageId: replyToId, threadId })
                   log.info(TAG, `Sent image ${filePath} to ${chatId}`)
                 } catch (e) {
                   log.error(TAG, `Failed to send image ${filePath}: ${e}`)
