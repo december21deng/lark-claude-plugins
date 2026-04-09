@@ -722,6 +722,7 @@ const DISPATCHER_PORT = Number(process.env.LARK_DISPATCHER_PORT || '0')
 if (DISPATCHER_PORT > 0) {
   log(`DISPATCHER MODE: starting HTTP server on port ${DISPATCHER_PORT}`)
 
+  try {
   const httpServer = Bun.serve({
     port: DISPATCHER_PORT,
     async fetch(req) {
@@ -779,6 +780,12 @@ if (DISPATCHER_PORT > 0) {
   })
 
   log(`DISPATCHER HTTP server listening on port ${DISPATCHER_PORT}`)
+  } catch (e) {
+    // EADDRINUSE after /clear: old bun process still holds the port.
+    // This is non-fatal — MCP stdio (reply tool) still works fine.
+    // The old HTTP server continues to receive messages for this worker.
+    log(`DISPATCHER HTTP server failed to start on port ${DISPATCHER_PORT}: ${e} (non-fatal, MCP stdio still active)`)
+  }
 }
 
 // ── Event handling removed — daemon handles all lark events ──
