@@ -124,7 +124,12 @@ export class LarkApi {
                 const allFixes = ['v1→v2 conversion', ...fixes]
                 log.info(TAG, `Sanitized card: ${allFixes.join('; ')}`)
               }
-            } catch {}
+            } catch (parseErr) {
+              log.warn(TAG, `Card auto-detect: JSON.parse failed: ${parseErr} — text starts with: ${text.slice(0, 200)}`)
+            }
+          }
+          if (!isCardJson && text.trimStart().startsWith('{')) {
+            log.warn(TAG, `Card auto-detect MISS: text looks like JSON but didn't match v2 card format. First 500 chars: ${text.slice(0, 500)}`)
           }
           content = isCardJson ? text : JSON.stringify({
             schema: '2.0',
