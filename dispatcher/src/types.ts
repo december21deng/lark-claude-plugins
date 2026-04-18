@@ -117,9 +117,24 @@ export interface ClaudeConfig {
   model?: string
 }
 
+export interface MailSubscription {
+  email: string
+  ownerOpenId: string         // open_id of the mailbox owner (for skill's 报销人 field)
+  ownerName?: string          // display name (for logs)
+}
+
+export interface MailConfig {
+  enabled: boolean            // feature flag — when false, mail-watcher does not start
+  larkCliBin?: string         // path to lark-cli binary (default: 'lark-cli')
+  inboxDir?: string           // local dir for mail attachments (default: ~/.lark-dispatcher/mail-inbox)
+  processedFile?: string      // local file tracking processed message_ids (default: ~/.lark-dispatcher/mail-processed.json)
+  subscriptions: MailSubscription[]
+}
+
 export interface AppConfig {
   lark: LarkConfig
   pool: PoolConfig
   claude: ClaudeConfig
   log: { level: string; dir: string }
+  mail?: MailConfig           // optional — when missing or enabled=false, mail-watcher is disabled
 }

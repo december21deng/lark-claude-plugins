@@ -48,5 +48,12 @@ export function loadConfig(): AppConfig {
       level: parsed.log?.level ?? 'info',
       dir: parsed.log?.dir ?? join(CONFIG_DIR, 'logs'),
     },
+    mail: parsed.mail ? {
+      enabled: parsed.mail.enabled ?? false,
+      larkCliBin: parsed.mail.larkCliBin,
+      inboxDir: parsed.mail.inboxDir,
+      processedFile: parsed.mail.processedFile,
+      subscriptions: parsed.mail.subscriptions ?? [],
+    } : undefined,
   }
 }

@@ -3,6 +3,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import type { AppConfig, Gateway, ToolCallRequest, ParsedMessage } from './types.js'
 import { LarkGateway } from './gateways/lark/ws.js'
+import { MailWatcher } from './gateways/mail/watcher.js'
 import { WorkerPool } from './pool.js'
 import { Router } from './router.js'
 import { AdminManager, type ManageAccessArgs } from './admin.js'
@@ -66,6 +67,20 @@ export async function startDaemon(config: AppConfig): Promise<void> {
         let body: ToolCallRequest | undefined
         try {
           body = await req.json() as ToolCallRequest
+
+          // Mail platform has no chat gateway — worker should never reply via it.
+          // But if it does (by mistake), ack gracefully and mark idle so worker can finish.
+          if (body.platform === 'mail') {
+            log.info(TAG, `mail platform tool-call: ${body.tool} convKey=${body.convKey} — ignoring (no chat gateway)`)
+            pool.heartbeat(body.convKey)
+            if (body.tool === 'reply') {
+              pool.markIdle(body.convKey)
+            }
+            return Response.json({
+              result: { content: [{ type: 'text', text: `(mail platform: tool "${body.tool}" ignored — use lark-mcp to notify users instead)` }] },
+            })
+          }
+
           const gw = gateways.get(body.platform)
 
           if (!gw) {
@@ -313,12 +328,35 @@ export async function startDaemon(config: AppConfig): Promise<void> {
     log.info(TAG, `Gateway "${name}" started`)
   }
 
+  // ── Start mail watcher (feature-flagged; config.mail.enabled must be true) ──
+  let mailWatcher: MailWatcher | null = null
+  if (config.mail?.enabled) {
+    mailWatcher = new MailWatcher(config.mail)
+    await mailWatcher.start((msg) => {
+      log.info(TAG, `Incoming from mail: ${msg.messageId} (${msg.chatId})`)
+      const convKey = `${msg.platform}:${msg.chatId}`
+      const existing = senderMap.get(convKey)
+      if (existing) {
+        existing.messageIds.push(msg.messageId)
+      } else {
+        senderMap.set(convKey, { senderId: msg.senderId, chatId: msg.chatId, chatType: msg.chatType, messageIds: [msg.messageId] })
+      }
+      router.route(msg).catch(e => log.error(TAG, `Mail route error: ${e}`))
+    })
+    log.info(TAG, 'Mail watcher started')
+  } else {
+    log.info(TAG, 'Mail watcher disabled (config.mail.enabled is falsy)')
+  }
+
   log.info(TAG, 'Dispatcher ready')
 
   // ── Signal handling ──
   const shutdown = async () => {
     log.info(TAG, 'Shutting down...')
     httpServer.stop()
+    if (mailWatcher) {
+      await mailWatcher.stop().catch(() => {})
+    }
     await pool.shutdown()
     for (const gw of gateways.values()) {
       await gw.stop().catch(() => {})
