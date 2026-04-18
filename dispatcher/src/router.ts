@@ -32,10 +32,10 @@ export class Router {
     await queue.acquire()
     try {
       // Get worker
-      const worker = await this._pool.getWorker(key)
+      const result = await this._pool.getWorker(key)
 
       // v4: Pool exhausted — all workers busy, queue message
-      if (!worker) {
+      if (!result) {
         const pos = this._pool.enqueuePending(msg, key)
         log.info(TAG, `Pool exhausted, queued ${key} at position ${pos}`)
 
@@ -49,6 +49,8 @@ export class Router {
         return
       }
 
+      const { worker, fresh } = result
+
       // Emoji state: OnIt — worker assigned
       const tracker = this._getTracker(msg.platform)
       if (tracker) {
@@ -56,6 +58,7 @@ export class Router {
       }
 
       // v5: Fetch thread history if message has threadId
+      // v6: Also fetch DM/chat history when worker is freshly assigned (after /clear)
       let content = msg.text
       if (msg.threadId) {
         try {
@@ -66,12 +69,21 @@ export class Router {
           }
         } catch (e) {
           log.warn(TAG, `Failed to fetch thread history for ${msg.threadId}: ${e}`)
-          // Continue without history — still forward the current message
+        }
+      } else if (fresh) {
+        try {
+          const historyXml = await this._fetchChatHistory(msg)
+          if (historyXml) {
+            content = `${historyXml}\n\n${content}`
+            log.info(TAG, `Injected chat history for ${msg.chatId} (${historyXml.split('\n').length - 2} messages)`)
+          }
+        } catch (e) {
+          log.warn(TAG, `Failed to fetch chat history for ${msg.chatId}: ${e}`)
         }
       }
 
       // Forward message to plugin
-      log.info(TAG, `Forwarding to :${worker.port} for ${key}`)
+      log.info(TAG, `Forwarding to :${worker.port} for ${key}${fresh ? ' (fresh)' : ''}`)
 
       const resp = await fetch(`http://localhost:${worker.port}/message`, {
         method: 'POST',
@@ -108,6 +120,33 @@ export class Router {
     } finally {
       queue.release()
     }
+  }
+
+  // ── v6: Chat history (DM / group without thread) ──
+
+  private async _fetchChatHistory(msg: ParsedMessage): Promise<string> {
+    const gw = this._gateways.get(msg.platform)
+    if (!gw || !('api' in gw)) return ''
+
+    const api = (gw as LarkGateway).api as LarkApi
+    const messages = await api.fetchChatMessages(msg.chatId, 20)
+
+    if (!messages.length) return ''
+
+    // Filter out current message and sort ascending
+    const history = messages
+      .filter(m => m.messageId !== msg.messageId)
+      .sort((a, b) => a.createTime - b.createTime)
+
+    if (!history.length) return ''
+
+    const lines = history.map(m => {
+      const time = formatTime(m.createTime)
+      const name = m.senderId === this._botOpenId ? 'bot' : m.senderName
+      return `[${time}] ${name}: ${m.text}`
+    })
+
+    return `<history chat_id="${msg.chatId}">\n${lines.join('\n')}\n</history>`
   }
 
   // ── v5: Thread history ──

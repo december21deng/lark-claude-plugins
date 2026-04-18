@@ -224,6 +224,54 @@ export class LarkApi {
     }
   }
 
+  /** v6: Fetch chat messages for DM history injection. */
+  async fetchChatMessages(chatId: string, limit: number = 20): Promise<Array<{
+    messageId: string
+    senderId: string
+    senderName: string
+    text: string
+    createTime: number
+    msgType: string
+  }>> {
+    try {
+      const res = await (this._client as any).im.message.list({
+        params: { container_id_type: 'chat', container_id: chatId, page_size: limit, sort_type: 'ByCreateTimeDesc' },
+      })
+      const items = res?.data?.items ?? []
+      return items.map((item: any) => {
+        const msgType = item.msg_type ?? 'text'
+        let text = ''
+        try {
+          const content = item.body?.content ?? '{}'
+          if (msgType === 'text') {
+            const parsed = JSON.parse(content)
+            text = parsed.text ?? ''
+          } else if (msgType === 'post') {
+            text = this._extractPostText(content)
+          } else if (msgType === 'interactive') {
+            text = extractCardText(content)
+          } else {
+            text = `[${msgType}]`
+          }
+        } catch {
+          text = '[消息解析失败]'
+        }
+
+        return {
+          messageId: item.message_id ?? '',
+          senderId: item.sender?.id ?? '',
+          senderName: item.sender?.id ?? '',
+          text,
+          createTime: Number(item.create_time ?? 0),
+          msgType,
+        }
+      })
+    } catch (e) {
+      log.error(TAG, `Failed to fetch chat messages for ${chatId}: ${e}`)
+      return []
+    }
+  }
+
   /** v5: Fetch thread messages for history injection. */
   async fetchThreadMessages(threadId: string, limit: number = 50): Promise<Array<{
     messageId: string

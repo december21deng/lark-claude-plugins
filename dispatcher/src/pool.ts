@@ -102,8 +102,8 @@ export class WorkerPool {
 
   // ── v5: 4-step scheduling ──
 
-  /** Get or assign a worker for a conversation. Returns null if pool exhausted. */
-  async getWorker(convKey: string): Promise<Worker | null> {
+  /** Get or assign a worker for a conversation. Returns null if pool exhausted. `fresh` is true when worker had no prior context for this conversation. */
+  async getWorker(convKey: string): Promise<{ worker: Worker; fresh: boolean } | null> {
     // Cancel any pending /clear timer for this convKey (message came in, keep the worker)
     this._cancelClearTimer(convKey)
 
@@ -113,13 +113,13 @@ export class WorkerPool {
       const w = this._workers[existingIdx]
       if (w.ready && await this._isHealthy(existingIdx)) {
         log.info(TAG, `[Step 1] Reusing worker[${existingIdx}] for ${convKey}`)
-        return w
+        return { worker: w, fresh: false }
       }
       // Not healthy → restart same worker
       log.warn(TAG, `Worker[${existingIdx}] not healthy, restarting for ${convKey}`)
       this._assignments.delete(convKey)
       await this._restartAndAssign(existingIdx, convKey)
-      return this._workers[existingIdx]
+      return { worker: this._workers[existingIdx], fresh: true }
     }
 
     // Step 2: find BARE worker (convKey === null, ready)
@@ -128,7 +128,7 @@ export class WorkerPool {
         this._cancelKillTimer(w.idx)
         this._assign(w.idx, convKey)
         log.info(TAG, `[Step 2] Assigned BARE worker[${w.idx}] to ${convKey}`)
-        return w
+        return { worker: w, fresh: true }
       }
     }
 
@@ -140,7 +140,7 @@ export class WorkerPool {
       log.info(TAG, `[Step 3] Spawning worker[${newIdx}] for ${convKey}`)
       await this._startWorkerWithRetry(newIdx)
       this._assign(newIdx, convKey)
-      return this._workers[newIdx]
+      return { worker: this._workers[newIdx], fresh: true }
     }
 
     // Step 4: pool exhausted
