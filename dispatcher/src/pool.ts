@@ -23,6 +23,7 @@ export class WorkerPool {
   private _killTimers = new Map<number, Timer>()      // worker idx → kill timer
   private _pendingQueue: PendingMessage[] = []
   private _onDrainPending?: (msg: PendingMessage) => void
+  private _onTimeoutIdle?: (convKey: string, replied: boolean) => void  // v7: BUSY timeout → idle callback
   private _busyCheckInterval?: Timer
   private _startingInBackground = false
 
@@ -97,6 +98,7 @@ export class WorkerPool {
       busy: false,
       lastActivityAt: 0,
       idx,
+      replied: false,
     }
   }
 
@@ -155,6 +157,7 @@ export class WorkerPool {
     const idx = this._assignments.get(convKey)
     if (idx === undefined) return
     this._workers[idx].busy = true
+    this._workers[idx].replied = false   // v7: reset reply flag on new busy cycle
     this._workers[idx].lastActivityAt = Date.now()
     this._cancelClearTimer(convKey)
     log.info(TAG, `markBusy: worker[${idx}] for ${convKey}`)
@@ -182,6 +185,20 @@ export class WorkerPool {
     this._workers[idx].lastActivityAt = Date.now()
   }
 
+  /** v7: Mark that the worker called reply during the current busy cycle. */
+  markReplied(convKey: string): void {
+    const idx = this._assignments.get(convKey)
+    if (idx === undefined) return
+    this._workers[idx].replied = true
+  }
+
+  /** v7: Did the worker call reply during the current busy cycle? */
+  hasReplied(convKey: string): boolean {
+    const idx = this._assignments.get(convKey)
+    if (idx === undefined) return false
+    return this._workers[idx].replied
+  }
+
   // ── Pending queue ──
 
   /** Queue a message when pool is exhausted. Returns queue position. */
@@ -199,6 +216,12 @@ export class WorkerPool {
   /** Set callback for draining pending messages. */
   setDrainCallback(fn: (msg: PendingMessage) => void): void {
     this._onDrainPending = fn
+  }
+
+  /** v7: Set callback for when BUSY timeout marks a worker idle.
+   * Called with (convKey, replied) so daemon can apply DONE or FAILED emoji. */
+  setTimeoutIdleCallback(fn: (convKey: string, replied: boolean) => void): void {
+    this._onTimeoutIdle = fn
   }
 
   get pendingCount(): number {
@@ -332,9 +355,40 @@ export class WorkerPool {
     const now = Date.now()
     for (const w of this._workers) {
       if (w.busy && (now - w.lastActivityAt) > this._busyTimeoutMs) {
-        log.warn(TAG, `BUSY timeout: worker[${w.idx}] (${w.convKey}) no heartbeat for ${((now - w.lastActivityAt) / 1000).toFixed(0)}s, forcing idle`)
         if (w.convKey) {
-          this.markIdle(w.convKey)
+          const convKey = w.convKey
+          const replied = w.replied   // v7: capture replied status before markIdle
+          const elapsed = ((now - w.lastActivityAt) / 1000).toFixed(0)
+          log.warn(TAG, `BUSY timeout: worker[${w.idx}] (${convKey}) no heartbeat for ${elapsed}s, checking tmux before forcing idle`)
+          // v9: BUSY timeout path — 30s window + token-first strategy.
+          // 识别假忙碌的关键：屏幕计时器一直在动但 token 冻结 → token-first 才能抓到。
+          // reply-path 走默认的 screen-first，避免 reply 过渡帧被误判 idle。
+          this.isWorkerTmuxIdle(convKey, 30_000, 'token-first').then((idle) => {
+            if (idle) {
+              log.warn(TAG, `BUSY timeout: worker[${w.idx}] (${convKey}) tmux confirmed idle (replied=${replied}), marking idle + auto-ESC`)
+              this.markIdle(convKey)
+              // v9: auto-ESC to unblock Claude CLI stuck on dead HTTP stream.
+              // Double-confirmed: busy >10min AND no tokens for 30s → very high confidence
+              // this is a fake-busy stall. ESC砍掉死连接让 Claude 回到提示符，
+              // 下一条排队消息或用户重发的消息就能被正常消费。
+              try {
+                spawnSync('tmux', ['send-keys', '-t', this._tmuxName(w.idx), 'Escape'], {
+                  timeout: 3000,
+                })
+                log.info(TAG, `Auto-ESC sent to worker[${w.idx}] (${convKey})`)
+              } catch (e) {
+                log.warn(TAG, `Auto-ESC failed for worker[${w.idx}] (${convKey}): ${e}`)
+              }
+              if (this._onTimeoutIdle) this._onTimeoutIdle(convKey, replied)
+            } else {
+              log.info(TAG, `BUSY timeout: worker[${w.idx}] (${convKey}) tmux still active, extending timeout`)
+              w.lastActivityAt = Date.now() // reset timer, check again later
+            }
+          }).catch(() => {
+            log.warn(TAG, `BUSY timeout: worker[${w.idx}] (${convKey}) tmux check failed, forcing idle as fallback`)
+            this.markIdle(convKey)
+            if (this._onTimeoutIdle) this._onTimeoutIdle(convKey, replied)
+          })
         }
       }
     }
@@ -421,6 +475,71 @@ export class WorkerPool {
     return lines.join('\n')
   }
 
+  // ── tmux idle detection ──
+
+  /** Check if a worker's Claude CLI is idle (showing ❯ prompt) by reading tmux. */
+  /**
+   * Snapshot-diff idle detection: capture tmux twice with a gap,
+   * if the screen hasn't changed → idle. If it changed → still working.
+   * Returns a Promise that resolves after the diff interval.
+   */
+  async isWorkerTmuxIdle(
+    convKey: string,
+    intervalMs: number = 3000,
+    strategy: 'screen-first' | 'token-first' = 'screen-first',
+  ): Promise<boolean> {
+    const idx = this._assignments.get(convKey)
+    if (idx === undefined) return false
+    const name = this._tmuxName(idx)
+
+    const capture = (): string => {
+      try {
+        const result = spawnSync('tmux', ['capture-pane', '-t', name, '-p'], {
+          encoding: 'utf-8',
+          timeout: 5000,
+        })
+        return (result.stdout ?? '').toString()
+      } catch {
+        return ''
+      }
+    }
+
+    // extract token counter like "↓ 283 tokens" or "↑ 5.7k tokens"
+    // Claude CLI prints this line while streaming.
+    const extractTokens = (text: string): string | null => {
+      const m = text.match(/[↓↑]\s*([\d.]+k?)\s*tokens/)
+      return m ? m[1] : null
+    }
+
+    const snap1 = capture()
+    if (!snap1) return false
+
+    await new Promise(resolve => setTimeout(resolve, intervalMs))
+
+    const snap2 = capture()
+    if (!snap2) return false
+
+    const screenSame = snap1 === snap2
+    const tokens1 = extractTokens(snap1)
+    const tokens2 = extractTokens(snap2)
+
+    if (strategy === 'screen-first') {
+      // v9: reply-path — 屏幕 diff 为主
+      // 屏幕在变 = busy（直接判定，避免 reply 刚发完的过渡帧被误判）
+      // 屏幕不变 = 进一步看 token，两边都有且相同才 idle（双重确认）
+      if (!screenSame) return false
+      if (tokens1 !== null && tokens2 !== null) return tokens1 === tokens2
+      // 屏幕不变且没有 token 计数行（Claude 回到提示符）= idle
+      return true
+    } else {
+      // v9: BUSY-timeout path — token 为主
+      // token 不变 = 卡死（识破假忙碌：屏幕计时器在动但 token 冻结）
+      // 没 token 时 fallback 屏幕 diff
+      if (tokens1 !== null && tokens2 !== null) return tokens1 === tokens2
+      return screenSame
+    }
+  }
+
   // ── tmux operations ──
 
   private _tmuxName(idx: number): string {
@@ -463,6 +582,8 @@ export class WorkerPool {
       '禁止执行任何需要终端交互确认的操作，包括但不限于：修改 ~/.mcp.json、修改 ~/.claude/ 配置、安装全局包。',
       '如果用户要求这类操作，告诉他们在自己的终端里执行。',
       '当用户要求管理 bot 的群权限或管理员时，必须使用 manage_access tool，不要自己判断是否允许——直接调用，后端会检查权限和聊天类型。如果 manage_access 返回错误，必须将错误消息原样转发给用户，不要自己重新措辞或猜测原因。绝对不要使用 /lark-customized:access skill 来管理权限——那个 skill 只管理消息通道的 access.json，不是 bot 的群权限和管理员。manage_access 支持 add_group/remove_group/list_groups/add_admin/remove_admin/list_admins。消息 meta 中的 chat_type 字段标识当前是私聊(private)还是群聊(group)。',
+      '长任务防超时：如果你预计任务需要超过 5 分钟（如市场调研、写飞书文档、批量搜索），必须每 5 分钟调用一次 heartbeat 工具，否则系统会在 10 分钟无心跳后判定你超时并强制中断任务。只要你在持续工作，就定期调 heartbeat。',
+      '你可以随时发送中间进度消息（如"已收到，开始调研"），系统会自动判断你是否真正完成了任务，不需要传任何特殊参数。',
       '需要浏览器时，必须使用 Chrome MCP（chrome-devtools 或 Claude_in_Chrome），禁止使用无头浏览器（headless）。',
       '禁止手动 react 状态 emoji（👀、✅、🤔等）到用户消息上，系统已自动管理状态 emoji。只有表达语义时才用 react tool。',
       '优先使用已安装的 skill（/skill-name）来完成任务，不要自己从零实现 skill 已覆盖的功能。',

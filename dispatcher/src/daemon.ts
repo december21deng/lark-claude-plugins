@@ -41,6 +41,38 @@ export async function startDaemon(config: AppConfig): Promise<void> {
   // ── Sender tracking (convKey → sender info + pending message IDs for emoji batch) ──
   const senderMap = new Map<string, { senderId: string; chatId: string; chatType: 'private' | 'group'; messageIds: string[] }>()
 
+  // v7: BUSY timeout → idle callback.
+  // When pool's snapshot-diff BUSY timeout confirms idle, apply terminal emoji:
+  //   replied=true  → DONE      (long task finished normally, just missed the 30s retry window)
+  //   replied=false → FACEPALM  (Claude went idle without replying — silent failure / fake-busy)
+  // v8: on silent-failure path also send a human-readable reply so the user knows to retry.
+  pool.setTimeoutIdleCallback((convKey, replied) => {
+    const entry = senderMap.get(convKey)
+    if (!entry) return
+    const gw = gateways.get('lark')
+    if (!(gw instanceof LarkGateway)) return
+    const emoji = replied ? 'DONE' : 'FACEPALM'
+    log.info(TAG, `BUSY-timeout idle: ${convKey} replied=${replied} → ${emoji} for ${entry.messageIds.length} msg(s)`)
+    const pendingMsgIds = [...entry.messageIds]
+    for (const msgId of pendingMsgIds) {
+      ;(gw as LarkGateway).tracker.transition(msgId, entry.chatId, emoji).catch(() => {})
+    }
+    entry.messageIds = []
+
+    // v8: when silent failure (no reply ever sent during this busy cycle), send a
+    // user-facing failure message so the user knows to retry. Reply to the first
+    // pending message to anchor the failure notice in the original thread.
+    if (!replied && pendingMsgIds.length > 0) {
+      const failureText = '⚠️ 抱歉,你的任务处理时遇到了网络长时间卡顿,我没能完成。这通常是 Claude 和上游 API 之间的网络问题,和你的问题本身无关。\n\n请直接重新发一遍同样的消息,我再试一次 🙏'
+      ;(gw as LarkGateway).sendMessage(entry.chatId, failureText, {
+        replyToMessageId: pendingMsgIds[0],
+        msgType: 'text',
+      }).catch((e) => {
+        log.warn(TAG, `Failed to send failure reply for ${convKey}: ${e}`)
+      })
+    }
+  })
+
   // ── Fetch bot open_id for thread history formatting ──
   const botOpenId = await larkGw.api.getBotOpenId()
   if (botOpenId) {
@@ -106,7 +138,6 @@ export async function startDaemon(config: AppConfig): Promise<void> {
               const messageId = body.args.message_id as string | undefined
               const files = (body.args.files as string[] | undefined) ?? []
               const msgType = (body.args.msg_type as string | undefined) as import('./types.js').MsgType | undefined
-
               // Always reply to original message to stay in the same thread.
               // Fallback: if Claude didn't pass reply_to, use the latest messageId from senderMap.
               const senderEntry = senderMap.get(body.convKey)
@@ -141,17 +172,36 @@ export async function startDaemon(config: AppConfig): Promise<void> {
                 }
               }
 
-              // Emoji state: DONE for ALL pending messages in this convKey
-              if (senderEntry && gw instanceof LarkGateway) {
-                for (const msgId of senderEntry.messageIds) {
-                  await (gw as LarkGateway).tracker.transition(msgId, chatId, 'DONE').catch(() => {})
-                }
-                senderEntry.messageIds = [] // clear for next batch
-              }
               log.info(TAG, `Reply sent to ${chatId}`)
 
-              // v4: Mark worker idle — reply means task is done
-              pool.markIdle(body.convKey)
+              // v7: mark that a reply occurred during this busy cycle — used by BUSY timeout handler
+              pool.markReplied(body.convKey)
+
+              // v6: Delayed tmux check — wait then check if worker is actually idle
+              // This replaces the old done-parameter approach which was unreliable
+              const replyConvKey = body.convKey
+              const replyChatId = chatId
+              const doIdleCheck = async (attempt: number) => {
+                const idle = await pool.isWorkerTmuxIdle(replyConvKey)
+                if (idle) {
+                  log.info(TAG, `Delayed check (attempt ${attempt}): worker idle for ${replyConvKey}, marking idle`)
+                  // Add DONE emoji
+                  const entry = senderMap.get(replyConvKey)
+                  if (entry && gw instanceof LarkGateway) {
+                    for (const msgId of entry.messageIds) {
+                      ;(gw as LarkGateway).tracker.transition(msgId, replyChatId, 'DONE').catch(() => {})
+                    }
+                    entry.messageIds = []
+                  }
+                  pool.markIdle(replyConvKey)
+                } else if (attempt < 3) {
+                  log.info(TAG, `Delayed check (attempt ${attempt}): worker still busy for ${replyConvKey}, will retry`)
+                  setTimeout(() => doIdleCheck(attempt + 1), 10_000)
+                } else {
+                  log.info(TAG, `Delayed check (attempt ${attempt}): worker still busy for ${replyConvKey}, giving up (busy timeout will handle)`)
+                }
+              }
+              setTimeout(() => doIdleCheck(1), 10_000)
 
               resultText = files.length
                 ? `Message sent successfully with ${files.length} image(s)`
@@ -174,6 +224,13 @@ export async function startDaemon(config: AppConfig): Promise<void> {
               const reactionId = body.args.reaction_id as string
               await gw.removeReaction(chatId, messageId, reactionId)
               resultText = 'Reaction removed'
+              break
+            }
+
+            case 'heartbeat': {
+              // Just heartbeat — pool.heartbeat() already called above for all tool-calls
+              log.info(TAG, `heartbeat: worker alive for ${body.convKey}`)
+              resultText = 'heartbeat received'
               break
             }
 

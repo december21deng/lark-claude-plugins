@@ -60,6 +60,7 @@ export interface Worker {
   busy: boolean            // v5: true when actively processing a message
   lastActivityAt: number   // v5: timestamp of last tool-call (heartbeat)
   idx: number              // v5: worker index in pool
+  replied: boolean         // v7: true if reply tool was called during current busy cycle
 }
 
 // v4: Pending message for when pool is exhausted

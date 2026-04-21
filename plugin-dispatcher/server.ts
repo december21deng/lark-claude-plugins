@@ -483,6 +483,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
           reply_to: { type: 'string', description: 'Message ID to reply to (quote-reply).' },
           files: { type: 'array', items: { type: 'string' }, description: 'Absolute file paths to attach as images.' },
           msg_type: { type: 'string', enum: ['text', 'post', 'image', 'file', 'audio', 'media', 'sticker', 'interactive', 'share_chat', 'share_user'], description: 'Lark message type. Default "interactive" (markdown card). Use "text" for plain text, "post" for rich text, "image" for image_key, "file" for file_key. For "interactive": if text is valid card JSON it is sent as-is, otherwise wrapped in markdown card.' },
+          // done parameter removed — daemon now auto-detects task completion via tmux
         },
         required: ['chat_id', 'text'],
       },
@@ -537,6 +538,16 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
         required: ['chat_id', 'message_id'],
       },
     },
+    // Heartbeat: keep worker alive during long tasks
+    ...(DAEMON_PORT ? [{
+      name: 'heartbeat',
+      description: '长任务心跳。当你预计任务需要超过 5 分钟（如市场调研、写长文档），每 5 分钟调用一次此工具，防止被系统判定为超时。无需传参。',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+        required: [] as string[],
+      },
+    }] : []),
     // v2: Permission prompt forwarding
     ...(DAEMON_PORT ? [{
       name: 'permission_prompt',
