@@ -142,12 +142,15 @@ export class MailWatcher {
   }
 
   private async _handleEvent(sub: MailSubscription, evt: any): Promise<void> {
-    // Event shape: lark-cli wraps the raw websocket event. Exact shape varies;
-    // be defensive. In metadata mode we expect at minimum:
-    //   { message_id, subject, from, attachments (array of {id, filename, content_type}) }
-    // If shape differs, log and skip.
+    // Real event shape from `lark-cli mail +watch --msg-format metadata --format data`:
+    //   { "message": { message_id, subject, body_preview, folder_id,
+    //                  head_from: {name, mail_address},
+    //                  attachments: [{id, filename, attachment_type}],
+    //                  label_ids, internal_date, ... } }
+    // Accept flatter shapes as fallback in case lark-cli changes its schema.
+    const msg = evt.message ?? evt.data?.message ?? evt.data ?? evt
 
-    const messageId: string | undefined = evt.message_id ?? evt.data?.message_id ?? evt.id
+    const messageId: string | undefined = msg.message_id ?? msg.id
     if (!messageId) {
       log.warn(TAG, `[${sub.email}] event missing message_id, skipping: ${JSON.stringify(evt).slice(0, 300)}`)
       return
@@ -159,16 +162,16 @@ export class MailWatcher {
       return
     }
 
-    const attachments: any[] = evt.attachments ?? evt.data?.attachments ?? []
+    const attachments: any[] = msg.attachments ?? []
     if (!Array.isArray(attachments) || attachments.length === 0) {
       log.info(TAG, `[${sub.email}] message ${messageId} has no attachments, skipping`)
       this._markProcessed(messageId) // mark to avoid re-processing on restart
       return
     }
 
-    const subject: string = evt.subject ?? evt.data?.subject ?? ''
-    const fromName: string = evt.head_from?.name ?? evt.data?.head_from?.name ?? sub.email
-    const fromAddr: string = evt.head_from?.mail_address ?? evt.data?.head_from?.mail_address ?? ''
+    const subject: string = msg.subject ?? ''
+    const fromName: string = msg.head_from?.name ?? sub.email
+    const fromAddr: string = msg.head_from?.mail_address ?? ''
 
     log.info(TAG, `[${sub.email}] incoming mail ${messageId} subject="${subject}" from="${fromAddr}" attachments=${attachments.length}`)
 
